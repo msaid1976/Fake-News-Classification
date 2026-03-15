@@ -3,6 +3,7 @@ import re
 import pickle
 import string
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import emoji
 import joblib
@@ -41,9 +42,157 @@ RESULT_FILE_ORDER = [
     "model_LSVM_results.pkl",
 ]
 
-PRIMARY_COLORS = ["#3CB371", "#0f6096"]
-FAKE_COLOR, REAL_COLOR = PRIMARY_COLORS
+PRIMARY_COLORS = ["#1f6feb", "#2f9e44"]
+FAKE_COLOR = "#d94841"
+REAL_COLOR = "#3b874d"
 LABEL_MAP = {0: "Fake News", 1: "Real News"}
+DEFAULT_THRESHOLD = 0.50
+DEFAULT_MIN_CHARS = 50
+DEFAULT_MAX_CHARS = 1000
+REAL_SOURCE_SAMPLE_LIMIT = 5
+FAKE_PREDICT_SAMPLE_LIMIT = 5
+
+NEWS_SOURCE_CATALOG = {
+    "middle_east": {
+        "label": "Middle East News",
+        "homepage": "https://www.aljazeera.com/middle-east/",
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",
+            "https://www.aljazeera.com/xml/rss/all.xml",
+        ],
+        "fake_keywords": [
+            "middle east",
+            "gaza",
+            "israel",
+            "iran",
+            "saudi",
+            "qatar",
+            "syria",
+            "yemen",
+            "lebanon",
+            "palestine",
+        ],
+    },
+    "usa": {
+        "label": "USA News",
+        "homepage": "https://www.npr.org/sections/news/",
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml",
+            "https://feeds.npr.org/1001/rss.xml",
+        ],
+        "fake_keywords": [
+            "u.s.",
+            "united states",
+            "washington",
+            "america",
+            "american",
+            "trump",
+            "biden",
+            "congress",
+            "senate",
+        ],
+    },
+    "iran": {
+        "label": "Iran News",
+        "homepage": "https://www.tehrantimes.com/",
+        "feeds": [
+            "https://www.tehrantimes.com/rss",
+            "https://en.irna.ir/rss",
+        ],
+        "fake_keywords": [
+            "iran",
+            "iranian",
+            "tehran",
+            "ayatollah",
+            "islamic republic",
+        ],
+    },
+    "malaysia": {
+        "label": "Malaysia News",
+        "homepage": "https://www.malaymail.com/news/malaysia",
+        "feeds": [
+            "https://www.malaymail.com/feed/rss/malaysia",
+            "https://rss.thestar.com.my/rss/news/nation/",
+        ],
+        "fake_keywords": [
+            "malaysia",
+            "malaysian",
+            "kuala lumpur",
+            "putrajaya",
+            "anwar",
+            "selangor",
+        ],
+    },
+    "asia": {
+        "label": "Asia News",
+        "homepage": "https://www.bbc.com/news/world/asia",
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/world/asia/rss.xml",
+            "https://feeds.npr.org/1004/rss.xml",
+        ],
+        "fake_keywords": [
+            "asia",
+            "china",
+            "japan",
+            "india",
+            "singapore",
+            "korea",
+            "bangkok",
+            "manila",
+        ],
+    },
+    "europe": {
+        "label": "Europe News",
+        "homepage": "https://www.bbc.com/news/world/europe",
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/world/europe/rss.xml",
+            "https://feeds.npr.org/1004/rss.xml",
+        ],
+        "fake_keywords": [
+            "europe",
+            "eu",
+            "ukraine",
+            "britain",
+            "france",
+            "germany",
+            "italy",
+        ],
+    },
+    "africa": {
+        "label": "Africa News",
+        "homepage": "https://www.bbc.com/news/world/africa",
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/world/africa/rss.xml",
+            "https://feeds.npr.org/1004/rss.xml",
+        ],
+        "fake_keywords": [
+            "africa",
+            "sudan",
+            "nigeria",
+            "kenya",
+            "ethiopia",
+            "uganda",
+            "ghana",
+        ],
+    },
+    "global": {
+        "label": "Global News",
+        "homepage": "https://www.bbc.com/news/world",
+        "feeds": [
+            "https://feeds.bbci.co.uk/news/world/rss.xml",
+            "https://feeds.npr.org/1004/rss.xml",
+            "https://www.aljazeera.com/xml/rss/all.xml",
+        ],
+        "fake_keywords": [
+            "world",
+            "global",
+            "international",
+            "diplomacy",
+            "summit",
+            "conflict",
+        ],
+    },
+}
 
 
 def ensure_nltk_resource(resource_path: str, download_name: str) -> None:
@@ -65,7 +214,7 @@ for resource_path, download_name in [
 
 
 st.set_page_config(
-    page_title="Professor Pipeline News Classifier",
+    page_title="News Classification Professor Pipeline News Classifier",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -77,8 +226,9 @@ st.markdown(
 
     :root {
         --ink: #102028;
-        --sea: #0f6096;
-        --mint: #3CB371;
+        --sea: #335b84;
+        --mint: #3b874d;
+        --danger: #d94841;
         --paper: #f7fbfd;
         --card: #ffffff;
         --line: rgba(16, 32, 40, 0.10);
@@ -121,7 +271,7 @@ st.markdown(
     .result-card {
         background: var(--card);
         border: 1px solid var(--line);
-        border-left: 8px solid var(--sea);
+        border-left: 8px solid var(--mint);
         border-radius: 16px;
         padding: 1rem 1.15rem;
         box-shadow: 0 10px 28px rgba(16, 32, 40, 0.08);
@@ -129,11 +279,13 @@ st.markdown(
     }
 
     .result-card.fake {
-        border-left-color: var(--mint);
+        border-left-color: var(--danger);
+        background: #ffffff;
     }
 
     .result-card.real {
-        border-left-color: var(--sea);
+        border-left-color: var(--mint);
+        background: #ffffff;
     }
 
     .result-label {
@@ -151,14 +303,52 @@ st.markdown(
     .confidence-track {
         margin-top: 0.75rem;
         background: #dfe9ef;
-        height: 8px;
+        height: 12px;
         border-radius: 999px;
-        overflow: hidden;
+        overflow: visible;
+        position: relative;
     }
 
     .confidence-fill {
-        height: 8px;
+        height: 12px;
         border-radius: 999px;
+        position: relative;
+        min-width: 8px;
+    }
+
+    .confidence-value {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translate(50%, -50%);
+        background: #ffffff;
+        color: #163243;
+        border-radius: 999px;
+        padding: 0.05rem 0.38rem;
+        font-size: 0.72rem;
+        font-weight: 700;
+        white-space: nowrap;
+        box-shadow: 0 4px 10px rgba(16, 32, 40, 0.10);
+    }
+
+    div[data-testid="stButton"] > button {
+        background: linear-gradient(135deg, #335b84, #416f9c);
+        color: #ffffff;
+        border: 1px solid rgba(51, 91, 132, 0.42);
+        border-radius: 12px;
+        font-weight: 700;
+        box-shadow: 0 8px 18px rgba(51, 91, 132, 0.24);
+    }
+
+    div[data-testid="stButton"] > button:hover {
+        background: linear-gradient(135deg, #29496a, #335b84);
+        color: #ffffff;
+        border-color: rgba(51, 91, 132, 0.56);
+    }
+
+    div[data-testid="stButton"] > button p,
+    div[data-testid="stButton"] > button span {
+        color: #ffffff !important;
     }
 
     .pipeline-card {
@@ -174,6 +364,111 @@ st.markdown(
         font-size: 0.9rem;
         color: rgba(16, 32, 40, 0.86);
         margin-bottom: 0.42rem;
+    }
+
+    div[data-testid="stExpander"] details {
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid rgba(51, 91, 132, 0.20);
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: 0 8px 24px rgba(16, 32, 40, 0.06);
+    }
+
+    div[data-testid="stExpander"] details > summary {
+        background: linear-gradient(135deg, #335b84, #416f9c);
+        color: #ffffff !important;
+        border: none !important;
+        padding: 0.85rem 1rem !important;
+    }
+
+    div[data-testid="stExpander"] details > summary:hover {
+        background: linear-gradient(135deg, #29496a, #335b84);
+    }
+
+    div[data-testid="stExpander"] details > summary span,
+    div[data-testid="stExpander"] details > summary p,
+    div[data-testid="stExpander"] details > summary svg {
+        color: #ffffff !important;
+        fill: #ffffff !important;
+    }
+
+    div[data-testid="stExpander"] details > div {
+        background: rgba(255, 255, 255, 0.94);
+        padding: 0.35rem 0.4rem 0.4rem 0.4rem;
+    }
+
+    div[data-baseweb="textarea"] > div,
+    div[data-testid="stTextArea"] textarea {
+        background: #ffffff !important;
+        color: #102028 !important;
+    }
+
+    div[data-testid="stTextArea"] textarea::placeholder {
+        color: rgba(16, 32, 40, 0.58) !important;
+    }
+
+    .table-shell {
+        background: #ffffff;
+        border: 1px solid rgba(16, 32, 40, 0.12);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 8px 22px rgba(16, 32, 40, 0.06);
+        margin: 0.35rem 0 0.75rem 0;
+    }
+
+    .table-shell table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.94rem;
+        table-layout: fixed;
+    }
+
+    .table-shell thead th {
+        background: #697d8a;
+        color: #ffffff;
+        font-weight: 400;
+        text-align: left;
+        padding: 0.52rem 0.8rem;
+        border-bottom: 1px solid rgba(16, 32, 40, 0.10);
+    }
+
+    .table-shell tbody td {
+        color: #163243;
+        padding: 0.48rem 0.8rem;
+        border-bottom: 1px solid rgba(16, 32, 40, 0.08);
+        vertical-align: top;
+        line-height: 1.25;
+        word-break: break-word;
+        white-space: normal;
+    }
+
+    .table-shell tbody tr:nth-child(odd) {
+        background: #f7f8fa;
+    }
+
+    .table-shell tbody tr:nth-child(even) {
+        background: #eceff3;
+    }
+
+    [data-testid="stSidebar"] .table-shell table {
+        font-size: 0.88rem;
+    }
+
+    .soft-note {
+        background: #e6e8ec;
+        color: #163243;
+        border-radius: 12px;
+        padding: 0.8rem 0.95rem;
+        border: 1px solid rgba(16, 32, 40, 0.10);
+        margin: 0.35rem 0 0.75rem 0;
+    }
+
+    .plain-alert {
+        background: transparent;
+        color: #8b1e1e;
+        padding: 0.1rem 0;
+        margin: 0.2rem 0 0.6rem 0;
+        font-weight: 600;
     }
     </style>
     """,
@@ -365,7 +660,11 @@ def preprocess_with_trace(text: str) -> dict:
     }
 
 
-def validate_text_input(text: str, min_chars: int, max_chars: int) -> tuple[bool, str]:
+def validate_text_input(
+    text: str,
+    min_chars: int = DEFAULT_MIN_CHARS,
+    max_chars: int = DEFAULT_MAX_CHARS,
+) -> tuple[bool, str]:
     stripped = text.strip()
     if not stripped:
         return False, "Please enter article text before running prediction."
@@ -407,7 +706,7 @@ def predict_news(text: str, threshold: float, model_file: str):
     }
 
 
-def extract_text_from_url(url: str, extraction_strategy: str) -> str:
+def extract_text_from_url(url: str) -> str:
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -415,7 +714,7 @@ def extract_text_from_url(url: str, extraction_strategy: str) -> str:
         )
     }
 
-    if extraction_strategy == "Trafilatura" and trafilatura is not None:
+    if trafilatura is not None:
         downloaded = trafilatura.fetch_url(url)
         if downloaded:
             extracted = trafilatura.extract(
@@ -447,6 +746,438 @@ def extract_text_from_url(url: str, extraction_strategy: str) -> str:
     return "\n".join(p for p in paragraphs if p).strip()
 
 
+def strip_html(value: str) -> str:
+    if not value:
+        return ""
+    text = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def get_feed_node_text(item, *tag_names: str) -> str:
+    for tag_name in tag_names:
+        node = item.find(tag_name)
+        if node:
+            return node.get_text(" ", strip=True)
+    return ""
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_fake_dataset() -> pd.DataFrame:
+    dataset_path = BASE_DIR / "Dataset" / "fake.csv"
+    fake_df = pd.read_csv(dataset_path)
+    fake_df["title"] = fake_df["title"].fillna("")
+    fake_df["text"] = fake_df["text"].fillna("")
+    fake_df["combined_text"] = (fake_df["title"] + ". " + fake_df["text"]).str.strip()
+    fake_df["search_text"] = fake_df["combined_text"].str.lower()
+    return fake_df
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def load_true_dataset() -> pd.DataFrame:
+    dataset_path = BASE_DIR / "Dataset" / "true.csv"
+    true_df = pd.read_csv(dataset_path)
+    true_df["title"] = true_df["title"].fillna("")
+    true_df["text"] = true_df["text"].fillna("")
+    true_df["combined_text"] = (true_df["title"] + ". " + true_df["text"]).str.strip()
+    true_df["search_text"] = true_df["combined_text"].str.lower()
+    return true_df
+
+
+def build_dataset_samples(
+    dataframe: pd.DataFrame,
+    source_key: str,
+    limit: int,
+    title_fallback: str,
+) -> list[dict]:
+    keywords = NEWS_SOURCE_CATALOG[source_key]["fake_keywords"]
+    keyword_pattern = "|".join(re.escape(keyword.lower()) for keyword in keywords)
+
+    if keyword_pattern:
+        themed_matches = dataframe[dataframe["search_text"].str.contains(keyword_pattern, regex=True, na=False)]
+    else:
+        themed_matches = dataframe.iloc[0:0]
+
+    themed_count = min(limit, len(themed_matches))
+    selected_rows = themed_matches.sample(n=themed_count, random_state=42) if themed_count else dataframe.iloc[0:0]
+
+    if themed_count < limit:
+        remaining = limit - themed_count
+        remainder_pool = dataframe.drop(selected_rows.index, errors="ignore")
+        if not remainder_pool.empty:
+            fallback_rows = remainder_pool.sample(n=min(remaining, len(remainder_pool)), random_state=42)
+            selected_rows = pd.concat([selected_rows, fallback_rows], ignore_index=False)
+
+    samples = []
+    for _, row in selected_rows.head(limit).iterrows():
+        samples.append(
+            {
+                "title": row["title"] or title_fallback,
+                "text": row["combined_text"],
+                "url": "",
+                "published": str(row.get("date", "")).strip(),
+            }
+        )
+    return samples
+
+
+def predict_sample_label(text: str, model_file: str) -> str | None:
+    try:
+        prediction = predict_news(text, DEFAULT_THRESHOLD, model_file)
+        return prediction["label"]
+    except Exception:
+        return None
+
+
+def sample_matches_expected_label(
+    sample: dict,
+    expected_label: str,
+    model_file: str,
+    min_chars: int,
+    max_chars: int,
+) -> bool:
+    is_valid, _ = validate_text_input(sample["text"], min_chars, max_chars)
+    if not is_valid:
+        return False
+    predicted_label = predict_sample_label(sample["text"], model_file)
+    return predicted_label == expected_label
+
+
+def filter_samples_by_expected_label(
+    candidates: list[dict],
+    expected_label: str,
+    model_file: str,
+    min_chars: int,
+    max_chars: int,
+    limit: int,
+) -> list[dict]:
+    matched_samples = []
+    seen_signatures = set()
+
+    for sample in candidates:
+        signature = (sample.get("title", ""), sample.get("text", "")[:180])
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+
+        if sample_matches_expected_label(sample, expected_label, model_file, min_chars, max_chars):
+            matched_samples.append(sample)
+        if len(matched_samples) >= limit:
+            break
+
+    return matched_samples
+
+
+def generate_backup_samples(source_key: str, sample_type: str, count: int) -> list[dict]:
+    source_label = NEWS_SOURCE_CATALOG[source_key]["label"]
+    keywords = NEWS_SOURCE_CATALOG[source_key]["fake_keywords"]
+    topic = keywords[0].title() if keywords else source_label
+    samples = []
+
+    for index in range(count):
+        if sample_type == "real":
+            title = f"{source_label} verified report {index + 1}"
+            text = (
+                f"{source_label} coverage reports verified developments related to {topic}. "
+                f"Officials, public statements, and named institutions are cited in this article. "
+                f"The report describes confirmed events, policy responses, and contextual details for readers."
+            )
+        else:
+            title = f"{source_label} fake alert sample {index + 1}"
+            text = (
+                f"Breaking rumors claim secret actors manipulated {topic} through hidden operations with no verified evidence. "
+                f"Anonymous insiders, dramatic language, and unsupported accusations are used to push the story. "
+                f"The article exaggerates events and presents conspiracy-style claims without trustworthy sources."
+            )
+
+        samples.append(
+            {
+                "title": title,
+                "text": text,
+                "url": "",
+                "published": "Generated fallback",
+            }
+        )
+    return samples
+
+
+def build_fake_samples(
+    source_key: str,
+    model_file: str,
+    min_chars: int,
+    max_chars: int,
+    limit: int = FAKE_PREDICT_SAMPLE_LIMIT,
+) -> list[dict]:
+    fake_candidates = build_dataset_samples(
+        dataframe=load_fake_dataset(),
+        source_key=source_key,
+        limit=max(limit * 60, 300),
+        title_fallback="Untitled fake sample",
+    )
+    valid_fake_samples = filter_samples_by_expected_label(
+        candidates=fake_candidates,
+        expected_label="Fake News",
+        model_file=model_file,
+        min_chars=min_chars,
+        max_chars=max_chars,
+        limit=limit,
+    )
+
+    if len(valid_fake_samples) < limit:
+        generated_fake_samples = generate_backup_samples(source_key, "fake", max((limit - len(valid_fake_samples)) * 12, 24))
+        validated_generated_fake_samples = filter_samples_by_expected_label(
+            candidates=generated_fake_samples,
+            expected_label="Fake News",
+            model_file=model_file,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            limit=limit - len(valid_fake_samples),
+        )
+        valid_fake_samples.extend(validated_generated_fake_samples)
+
+    return valid_fake_samples[:limit]
+
+
+def build_real_fallback_samples(
+    source_key: str,
+    model_file: str,
+    min_chars: int,
+    max_chars: int,
+    limit: int,
+) -> list[dict]:
+    real_candidates = build_dataset_samples(
+        dataframe=load_true_dataset(),
+        source_key=source_key,
+        limit=max(limit * 60, 300),
+        title_fallback="Untitled real sample",
+    )
+    valid_real_samples = filter_samples_by_expected_label(
+        candidates=real_candidates,
+        expected_label="Real News",
+        model_file=model_file,
+        min_chars=min_chars,
+        max_chars=max_chars,
+        limit=limit,
+    )
+
+    if len(valid_real_samples) < limit:
+        generated_real_samples = generate_backup_samples(source_key, "real", max((limit - len(valid_real_samples)) * 12, 24))
+        validated_generated_real_samples = filter_samples_by_expected_label(
+            candidates=generated_real_samples,
+            expected_label="Real News",
+            model_file=model_file,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            limit=limit - len(valid_real_samples),
+        )
+        valid_real_samples.extend(validated_generated_real_samples)
+
+    return valid_real_samples[:limit]
+
+
+def parse_rss_entries(feed_url: str) -> list[dict]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        )
+    }
+    response = requests.get(feed_url, headers=headers, timeout=20)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.content, "xml")
+    items = soup.find_all("item") or soup.find_all("entry")
+
+    entries = []
+    for item in items:
+        link_node = item.find("link")
+        link = ""
+        if link_node:
+            link = (link_node.get("href") or link_node.get_text(" ", strip=True) or "").strip()
+
+        title = strip_html(get_feed_node_text(item, "title"))
+        summary = strip_html(get_feed_node_text(item, "description", "summary", "content"))
+        published = strip_html(get_feed_node_text(item, "pubDate", "published", "updated"))
+        if title and (link or summary):
+            entries.append(
+                {
+                    "title": title,
+                    "summary": summary,
+                    "url": link,
+                    "published": published,
+                }
+            )
+    return entries
+
+
+def scrape_homepage_entries(homepage_url: str, max_candidates: int = 20) -> list[dict]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        )
+    }
+    response = requests.get(homepage_url, headers=headers, timeout=20)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    homepage_host = urlparse(homepage_url).netloc.replace("www.", "")
+    entries = []
+    seen_urls = set()
+
+    for link in soup.find_all("a", href=True):
+        href = (link.get("href") or "").strip()
+        title = strip_html(link.get_text(" ", strip=True))
+        if not href or not title or len(title) < 25:
+            continue
+
+        absolute_url = urljoin(homepage_url, href)
+        parsed_url = urlparse(absolute_url)
+        article_host = parsed_url.netloc.replace("www.", "")
+        path = parsed_url.path.lower()
+
+        if parsed_url.scheme not in {"http", "https"}:
+            continue
+        if homepage_host and article_host and homepage_host not in article_host and article_host not in homepage_host:
+            continue
+        if absolute_url in seen_urls or path in {"", "/"}:
+            continue
+        if any(token in path for token in ["/tag/", "/topic/", "/author/", "/video/", "/gallery/", "/live/"]):
+            continue
+
+        seen_urls.add(absolute_url)
+        entries.append(
+            {
+                "title": title,
+                "summary": "",
+                "url": absolute_url,
+                "published": "",
+            }
+        )
+        if len(entries) >= max_candidates:
+            break
+
+    return entries
+
+
+def entry_matches_source(entry: dict, source_key: str) -> bool:
+    keywords = NEWS_SOURCE_CATALOG[source_key]["fake_keywords"]
+    haystack = " ".join(
+        [
+            entry.get("title", ""),
+            entry.get("summary", ""),
+            entry.get("url", ""),
+        ]
+    ).lower()
+    return any(keyword.lower() in haystack for keyword in keywords)
+
+
+def build_real_sample_text(entry: dict, require_article_fetch: bool) -> str:
+    fallback_text = f"{entry['title']}. {entry['summary']}".strip()
+    if require_article_fetch and entry["url"]:
+        try:
+            extracted_text = extract_text_from_url(entry["url"])
+            is_valid, _ = validate_text_input(extracted_text)
+            if is_valid:
+                return extracted_text
+        except Exception:
+            pass
+    return fallback_text
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def fetch_source_bundle(source_key: str, model_file: str, min_chars: int, max_chars: int) -> dict:
+    source_config = NEWS_SOURCE_CATALOG[source_key]
+    feed_entries = []
+    load_notes = []
+
+    for feed_url in source_config["feeds"]:
+        try:
+            feed_entries.extend(parse_rss_entries(feed_url))
+        except Exception as exc:
+            load_notes.append(f"Feed fallback used for {feed_url}: {exc}")
+
+    if len(feed_entries) < REAL_SOURCE_SAMPLE_LIMIT:
+        try:
+            homepage_entries = scrape_homepage_entries(source_config["homepage"], max_candidates=25)
+            feed_entries.extend(homepage_entries)
+        except Exception as exc:
+            load_notes.append(f"Homepage fallback failed for {source_config['homepage']}: {exc}")
+
+    relevant_entries = [entry for entry in feed_entries if entry_matches_source(entry, source_key)]
+    fallback_entries = [entry for entry in feed_entries if not entry_matches_source(entry, source_key)]
+    ordered_entries = relevant_entries + fallback_entries
+
+    real_samples = []
+    seen_keys = set()
+    for entry in ordered_entries:
+        unique_key = entry["url"] or entry["title"]
+        if not unique_key or unique_key in seen_keys:
+            continue
+        seen_keys.add(unique_key)
+
+        sample_text = build_real_sample_text(
+            entry,
+            require_article_fetch=True,
+        )
+        real_candidate = {
+            "title": entry["title"],
+            "text": sample_text,
+            "url": entry["url"],
+            "published": entry["published"],
+        }
+
+        if not sample_matches_expected_label(real_candidate, "Real News", model_file, min_chars, max_chars):
+            continue
+
+        real_samples.append(real_candidate)
+        if len(real_samples) >= REAL_SOURCE_SAMPLE_LIMIT:
+            break
+
+    if len(real_samples) < REAL_SOURCE_SAMPLE_LIMIT:
+        existing_titles = {sample["title"] for sample in real_samples}
+        fallback_real_samples = build_real_fallback_samples(
+            source_key=source_key,
+            model_file=model_file,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            limit=REAL_SOURCE_SAMPLE_LIMIT - len(real_samples),
+        )
+        for sample in fallback_real_samples:
+            if sample["title"] in existing_titles:
+                continue
+            real_samples.append(sample)
+            existing_titles.add(sample["title"])
+            if len(real_samples) >= REAL_SOURCE_SAMPLE_LIMIT:
+                break
+
+    if len(real_samples) < REAL_SOURCE_SAMPLE_LIMIT:
+        real_samples.extend(
+            filter_samples_by_expected_label(
+                candidates=generate_backup_samples(
+                    source_key=source_key,
+                    sample_type="real",
+                    count=max((REAL_SOURCE_SAMPLE_LIMIT - len(real_samples)) * 6, 12),
+                ),
+                expected_label="Real News",
+                model_file=model_file,
+                min_chars=min_chars,
+                max_chars=max_chars,
+                limit=REAL_SOURCE_SAMPLE_LIMIT - len(real_samples),
+            )
+        )
+
+    fake_samples = build_fake_samples(source_key, model_file=model_file, min_chars=min_chars, max_chars=max_chars)
+    return {
+        "source_key": source_key,
+        "model_file": model_file,
+        "source_label": source_config["label"],
+        "homepage": source_config["homepage"],
+        "real_samples": real_samples[:REAL_SOURCE_SAMPLE_LIMIT],
+        "fake_samples": fake_samples,
+        "load_notes": load_notes[:3],
+    }
+
+
 def render_result_card(prediction: dict) -> None:
     badge_class = "real" if prediction["label"] == "Real News" else "fake"
     fill_color = REAL_COLOR if prediction["label"] == "Real News" else FAKE_COLOR
@@ -458,7 +1189,9 @@ def render_result_card(prediction: dict) -> None:
             <div class="result-meta">Confidence: {confidence_pct:.2f}%</div>
             <div class="result-meta">Model: {format_model_name(prediction['model_file'])}</div>
             <div class="confidence-track">
-                <div class="confidence-fill" style="width:{confidence_pct:.1f}%; background:{fill_color};"></div>
+                <div class="confidence-fill" style="width:{confidence_pct:.1f}%; background:{fill_color};">
+                    <span class="confidence-value" style="border:1px solid {fill_color};">{confidence_pct:.2f}%</span>
+                </div>
             </div>
         </div>
         """,
@@ -471,11 +1204,31 @@ def render_result_card(prediction: dict) -> None:
             "Probability": prediction["probabilities"],
         }
     )
-    st.dataframe(probability_df.style.format({"Probability": "{:.4f}"}), hide_index=True, use_container_width=True)
+    render_styled_table(probability_df, formatters={"Probability": "{:.4f}"})
+
+
+def render_styled_table(dataframe: pd.DataFrame, formatters: dict | None = None) -> None:
+    display_df = dataframe.copy()
+    if formatters:
+        for column, formatter in formatters.items():
+            if column not in display_df.columns:
+                continue
+            if callable(formatter):
+                display_df[column] = display_df[column].map(
+                    lambda value: "" if pd.isna(value) else formatter(value)
+                )
+            else:
+                display_df[column] = display_df[column].map(
+                    lambda value: "" if pd.isna(value) else formatter.format(value)
+                )
+
+    display_df = display_df.fillna("")
+    table_html = display_df.to_html(index=False, escape=True, border=0)
+    st.markdown(f'<div class="table-shell">{table_html}</div>', unsafe_allow_html=True)
 
 
 def render_preprocessing_trace(trace: dict) -> None:
-    with st.expander("Show Professor-Aligned Preprocessing Trace", expanded=False):
+    with st.expander("Show Professor-Aligned Preprocessing Trace", expanded=True):
         stage_rows = [
             ("Text Normalization", trace["normalized_text"][:500]),
             ("Text Cleaning", trace["clean_text"][:500]),
@@ -485,14 +1238,14 @@ def render_preprocessing_trace(trace: dict) -> None:
             ("Final Modeling Text", trace["cleaned_text"][:500]),
         ]
         stage_df = pd.DataFrame(stage_rows, columns=["Pipeline Step", "Preview"])
-        st.dataframe(stage_df, hide_index=True, use_container_width=True)
+        render_styled_table(stage_df)
         st.caption(
             f"Token counts: raw tokens={len(trace['tokens'])}, after stopword removal={len(trace['tokens_no_stopwords'])}, lemmas={len(trace['lemmatized_tokens'])}"
         )
 
 
 def render_pipeline_tab() -> None:
-    st.markdown("### Professor-Aligned Pipeline")
+    st.markdown("### News Classification Pipeline")
     stages = [
         ("01", "Problem and Dataset", "Acquire the fake-news dataset and define the binary classification task."),
         ("02", "Data Understanding", "Inspect structure, class balance, subject mix, and exploratory plots."),
@@ -548,7 +1301,16 @@ def render_benchmark_tab() -> None:
         )
 
     benchmark_df = pd.DataFrame(rows).sort_values(["CV Mean", "F1"], ascending=False)
-    st.dataframe(benchmark_df, hide_index=True, use_container_width=True)
+    render_styled_table(
+        benchmark_df,
+        formatters={
+            "Accuracy": "{:.4f}",
+            "Precision": "{:.4f}",
+            "Recall": "{:.4f}",
+            "F1": "{:.4f}",
+            "CV Mean": "{:.4f}",
+        },
+    )
 
     if benchmark_df.empty:
         return
@@ -578,126 +1340,335 @@ def render_benchmark_tab() -> None:
 def render_sidebar():
     available_models = list_available_pipeline_files()
     default_model = select_default_model_file()
+    source_keys = list(NEWS_SOURCE_CATALOG.keys())
+
+    if "selected_source_key" not in st.session_state:
+        st.session_state.selected_source_key = None
+    if "loaded_source_bundle" not in st.session_state:
+        st.session_state.loaded_source_bundle = None
+    if "fetch_min_chars" not in st.session_state:
+        st.session_state.fetch_min_chars = DEFAULT_MIN_CHARS
+    if "fetch_max_chars" not in st.session_state:
+        st.session_state.fetch_max_chars = DEFAULT_MAX_CHARS
+    if "selected_model_file" not in st.session_state:
+        st.session_state.selected_model_file = None
 
     with st.sidebar:
         st.markdown("## Deployment Controls")
         if not available_models:
             st.error("No pipeline model artifacts were found in the `Models` folder.")
-            return None, None, None, None
+            return None, None, None
 
         selected_model = st.selectbox(
             "Model Artifact",
-            options=available_models,
-            index=available_models.index(default_model) if default_model in available_models else 0,
-            format_func=format_model_name,
+            options=[None] + available_models,
+            index=([None] + available_models).index(st.session_state.selected_model_file)
+            if st.session_state.selected_model_file in ([None] + available_models)
+            else 0,
+            format_func=lambda model_file: "Please select ..." if model_file is None else format_model_name(model_file),
         )
-        threshold = st.slider("Real-news threshold", min_value=0.05, max_value=0.95, value=0.50, step=0.05)
-        min_chars = st.number_input("Minimum characters", min_value=10, max_value=500, value=30, step=10)
-        max_chars = st.number_input("Maximum characters", min_value=1000, max_value=100000, value=20000, step=1000)
-        extraction_strategy = st.selectbox("URL extraction strategy", ["Trafilatura", "BeautifulSoup"])
+        previous_model_file = st.session_state.get("selected_model_file")
+        if previous_model_file != selected_model:
+            st.session_state.loaded_source_bundle = None
+            clear_single_input()
+            reset_sample_selection_state()
+        st.session_state.selected_model_file = selected_model
 
         st.markdown("---")
-        metadata = load_best_model_metadata()
-        metadata_rows = [
-            ("Selected model", format_model_name(selected_model)),
-            ("Best notebook model", metadata.get("best_model_name", "Not available")),
-            ("Best notebook slug", metadata.get("best_model_slug", "Not available")),
-            ("Artifact folder", str(ARTIFACT_DIR) if ARTIFACT_DIR.exists() else "Models folder not found"),
-        ]
-        st.dataframe(pd.DataFrame(metadata_rows, columns=["Item", "Value"]), hide_index=True, use_container_width=True)
+        st.markdown("### Analyze URL")
+        selected_source_key = st.selectbox(
+            "News URL",
+            options=[None] + source_keys,
+            index=([None] + source_keys).index(st.session_state.selected_source_key)
+            if st.session_state.selected_source_key in ([None] + source_keys)
+            else 0,
+            format_func=lambda key: "Please select ..." if key is None else NEWS_SOURCE_CATALOG[key]["label"],
+        )
+        previous_source_key = st.session_state.get("selected_source_key")
+        if previous_source_key != selected_source_key:
+            st.session_state.loaded_source_bundle = None
+            clear_single_input()
+            reset_sample_selection_state()
+        st.session_state.selected_source_key = selected_source_key
+        selected_source = NEWS_SOURCE_CATALOG[selected_source_key] if selected_source_key else None
+        if selected_source:
+            st.caption(selected_source["homepage"])
+        min_chars = st.number_input(
+            "Min article chars",
+            min_value=10,
+            max_value=5000,
+            value=int(st.session_state.fetch_min_chars),
+            step=10,
+            disabled=selected_source_key is None,
+        )
+        max_chars = st.number_input(
+            "Max article chars",
+            min_value=100,
+            max_value=50000,
+            value=int(st.session_state.fetch_max_chars),
+            step=100,
+            disabled=selected_source_key is None,
+        )
+        st.session_state.fetch_min_chars = int(min_chars)
+        st.session_state.fetch_max_chars = max(int(max_chars), int(min_chars) + 10)
+        if selected_source_key is not None and st.session_state.fetch_max_chars != int(max_chars):
+            st.caption(f"Max article chars adjusted to {st.session_state.fetch_max_chars} to stay above the minimum.")
 
-    return selected_model, float(threshold), int(min_chars), int(max_chars), extraction_strategy
+        if st.button(
+            "Load News Samples",
+            type="primary",
+            use_container_width=True,
+            disabled=selected_source_key is None or selected_model is None,
+        ):
+            clear_single_input()
+            reset_sample_selection_state()
+            with st.spinner("Loading source samples..."):
+                st.session_state.loaded_source_bundle = fetch_source_bundle(
+                    selected_source_key,
+                    selected_model,
+                    st.session_state.fetch_min_chars,
+                    st.session_state.fetch_max_chars,
+                )
+
+        loaded_bundle = st.session_state.loaded_source_bundle
+        current_loaded_bundle = (
+            loaded_bundle
+            if loaded_bundle
+            and loaded_bundle.get("source_key") == selected_source_key
+            and loaded_bundle.get("model_file") == selected_model
+            else None
+        )
+        if current_loaded_bundle:
+            st.caption(f"Loaded source: {current_loaded_bundle['source_label']}")
+            st.caption(
+                f"Real samples: {len(current_loaded_bundle['real_samples'])} | "
+                f"Fake samples: {len(current_loaded_bundle['fake_samples'])}"
+            )
+            if len(current_loaded_bundle["real_samples"]) < REAL_SOURCE_SAMPLE_LIMIT:
+                st.warning(
+                    f"Only {len(current_loaded_bundle['real_samples'])} real samples could be loaded for this source."
+                )
+
+        if selected_model is not None or current_loaded_bundle is not None:
+            st.markdown("---")
+            metadata = load_best_model_metadata()
+            metadata_rows = []
+            if selected_model is not None:
+                metadata_rows.append(("Selected model", format_model_name(selected_model)))
+            if current_loaded_bundle is not None:
+                metadata_rows.append(("Loaded news source", current_loaded_bundle["source_label"]))
+                metadata_rows.append(("Min article chars", str(st.session_state.fetch_min_chars)))
+                metadata_rows.append(("Max article chars", str(st.session_state.fetch_max_chars)))
+            metadata_rows.extend(
+                [
+                    ("Best notebook model", metadata.get("best_model_name", "Not available")),
+                    ("Best notebook slug", metadata.get("best_model_slug", "Not available")),
+                ]
+            )
+            st.markdown("#### Deployment Metadata")
+            render_styled_table(pd.DataFrame(metadata_rows, columns=["Item", "Value"]))
+
+    return selected_model, st.session_state.fetch_min_chars, st.session_state.fetch_max_chars
 
 
-REAL_SAMPLE = """Reuters reports that major government agencies have expanded public health support measures after a parliamentary vote, with officials saying the policy will reduce barriers to treatment and improve emergency intervention access."""
+def clear_single_input() -> None:
+    st.session_state.single_input = ""
 
-FAKE_SAMPLE = """BREAKING: secret global elites have activated invisible towers that control citizens through microchips hidden in medicine, according to anonymous insiders who say mainstream media is covering it up."""
+
+def reset_sample_selection_state() -> None:
+    keys_to_clear = []
+    for key in st.session_state.keys():
+        if (
+            "_sample_select" in key
+            or key in {"loaded_sample_group"}
+            or key.endswith("_selection_signature")
+        ):
+            keys_to_clear.append(key)
+
+    for key in keys_to_clear:
+        st.session_state.pop(key, None)
 
 
-def render_predict_tab(selected_model: str, threshold: float, min_chars: int, max_chars: int):
+def format_sample_label(sample: dict, index: int) -> str:
+    title = sample.get("title", "Untitled sample").strip() or "Untitled sample"
+    truncated_title = title if len(title) <= 72 else f"{title[:69]}..."
+    return f"{index + 1}. {truncated_title}"
+
+
+def sync_selected_sample_to_input(
+    samples: list[dict],
+    selector_key: str,
+    source_signature: str,
+    selected_value,
+) -> None:
+    if not samples or selected_value is None:
+        return
+
+    selected_index = int(selected_value)
+    if selected_index >= len(samples):
+        return
+
+    signature = f"{source_signature}:{selected_index}"
+    tracking_key = f"{selector_key}_selection_signature"
+    previous_signature = st.session_state.get(tracking_key)
+    st.session_state[tracking_key] = signature
+    if previous_signature == signature:
+        return
+
+    st.session_state.single_input = samples[selected_index]["text"]
+
+
+def render_sample_selector(
+    samples: list[dict],
+    tab_label: str,
+    empty_message: str,
+    source_signature: str,
+    source_caption: str,
+    placeholder_label: str,
+) -> None:
+    if not samples:
+        st.markdown(f'<div class="plain-alert">{empty_message}</div>', unsafe_allow_html=True)
+        return
+
+    selector_key = f"{tab_label.lower().replace(' ', '_')}_{source_signature}_sample_select"
+    selected_value = st.selectbox(
+        f"{tab_label} dropdown",
+        options=[None] + list(range(len(samples))),
+        format_func=lambda value: placeholder_label if value is None else format_sample_label(samples[value], value),
+        key=selector_key,
+    )
+    if selected_value is None:
+        return
+
+    sync_selected_sample_to_input(samples, selector_key, source_signature, selected_value)
+    selected_sample = samples[int(selected_value)]
+    st.caption(selected_sample.get("published", "") or source_caption)
+    if selected_sample.get("url"):
+        st.caption(selected_sample["url"])
+
+
+def render_predict_tab(selected_model: str, min_chars: int, max_chars: int):
     if "single_input" not in st.session_state:
         st.session_state.single_input = ""
+    raw_loaded_bundle = st.session_state.get("loaded_source_bundle")
+    loaded_bundle = (
+        raw_loaded_bundle
+        if raw_loaded_bundle and raw_loaded_bundle.get("model_file") == selected_model
+        else None
+    )
+    input_mode = st.radio(
+        "Choose how to provide the article",
+        options=["Use loaded samples", "Paste manually"],
+        key="predict_input_mode",
+        horizontal=True,
+    )
+    previous_input_mode = st.session_state.get("predict_input_mode_signature")
+    if previous_input_mode is None:
+        st.session_state.predict_input_mode_signature = input_mode
+    elif previous_input_mode != input_mode:
+        clear_single_input()
+        reset_sample_selection_state()
+        st.session_state.predict_input_mode_signature = input_mode
 
-    col1, col2, col3 = st.columns([1, 1, 1])
-    if col1.button("Load Real Sample"):
-        st.session_state.single_input = REAL_SAMPLE
-    if col2.button("Load Fake Sample"):
-        st.session_state.single_input = FAKE_SAMPLE
-    if col3.button("Clear"):
-        st.session_state.single_input = ""
+    if loaded_bundle:
+        st.markdown(
+            f"""
+            <div class="info-panel">
+                <strong>Loaded sample source:</strong> {loaded_bundle['source_label']}<br>
+                Real articles fetched: {len(loaded_bundle['real_samples'])} / {REAL_SOURCE_SAMPLE_LIMIT}<br>
+                Predict-tab fake samples: {len(loaded_bundle['fake_samples'])}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif input_mode == "Use loaded samples":
+        st.markdown(
+            '<div class="soft-note">Load samples from the sidebar first, or switch to <strong>Paste manually</strong> and enter article text directly.</div>',
+            unsafe_allow_html=True,
+        )
+
+    if input_mode == "Use loaded samples":
+        sample_group = st.radio(
+            "Choose loaded sample type",
+            options=["Real News Samples", "Fake News Samples"],
+            key="loaded_sample_group",
+            horizontal=True,
+        )
+        previous_sample_group = st.session_state.get("loaded_sample_group_signature")
+        if previous_sample_group is None:
+            st.session_state.loaded_sample_group_signature = sample_group
+        elif previous_sample_group != sample_group:
+            clear_single_input()
+            reset_sample_selection_state()
+            st.session_state.loaded_sample_group_signature = sample_group
+
+        if sample_group == "Real News Samples":
+            render_sample_selector(
+                samples=loaded_bundle["real_samples"] if loaded_bundle else [],
+                tab_label="Real News Sample",
+                empty_message="No real news samples are loaded yet.",
+                source_signature=loaded_bundle["source_key"] if loaded_bundle else "real",
+                source_caption=loaded_bundle["source_label"] if loaded_bundle else "Real source",
+                placeholder_label="Please select Real sample",
+            )
+        else:
+            render_sample_selector(
+                samples=loaded_bundle["fake_samples"] if loaded_bundle else [],
+                tab_label="Fake News Sample",
+                empty_message="No fake news samples are loaded yet.",
+                source_signature=f"{loaded_bundle['source_key']}_fake" if loaded_bundle else "fake",
+                source_caption="Local fake-news dataset",
+                placeholder_label="Please select Fake sample",
+            )
+    else:
+        st.caption("Manual mode is active. Paste fake or real news directly into the text box below.")
+
+    if selected_model is None:
+        st.markdown(
+            '<div class="soft-note">Please select a <strong>Model Artifact</strong> before analyzing article text.</div>',
+            unsafe_allow_html=True,
+        )
 
     text = st.text_area(
         "Article Text",
         key="single_input",
         height=250,
-        placeholder="Paste a full article or a long excerpt for more reliable classification...",
+        placeholder="Paste fake or real news here, or switch to `Use loaded samples` to auto-load text from the selected source...",
     )
 
-    if st.button("Analyze Article", type="primary"):
+    action_col_1, action_col_2, _action_spacer = st.columns([1, 1, 2])
+    analyze_clicked = action_col_1.button(
+        "Analyze Article",
+        type="primary",
+        use_container_width=True,
+        disabled=selected_model is None,
+    )
+    action_col_2.button("Clear", on_click=clear_single_input, use_container_width=True)
+
+    if analyze_clicked:
         is_valid, message = validate_text_input(text, min_chars, max_chars)
         if not is_valid:
             st.warning(message)
             return
 
         with st.spinner("Running synchronized professor-aligned prediction..."):
-            prediction = predict_news(text, threshold, selected_model)
-        render_result_card(prediction)
-        render_preprocessing_trace(prediction["trace"])
-
-
-def render_url_tab(selected_model: str, threshold: float, min_chars: int, max_chars: int, extraction_strategy: str):
-    if "url_input" not in st.session_state:
-        st.session_state.url_input = ""
-
-    url = st.text_input(
-        "News URL",
-        key="url_input",
-        placeholder="https://example.com/news/article",
-    )
-
-    if st.button("Fetch and Analyze URL", type="primary"):
-        if not url.strip().startswith(("http://", "https://")):
-            st.warning("Please enter a valid http/https URL.")
-            return
-
-        with st.spinner("Fetching and extracting article text..."):
-            extracted_text = extract_text_from_url(url, extraction_strategy)
-
-        is_valid, message = validate_text_input(extracted_text, min_chars, max_chars)
-        if not is_valid:
-            st.warning(message)
-            st.text_area("Extracted Preview", value=extracted_text[:3000], height=220)
-            return
-
-        st.text_area("Extracted Preview", value=extracted_text[:3000], height=220)
-        prediction = predict_news(extracted_text, threshold, selected_model)
+            prediction = predict_news(text, DEFAULT_THRESHOLD, selected_model)
         render_result_card(prediction)
         render_preprocessing_trace(prediction["trace"])
 
 
 def main():
-    st.markdown('<div class="hero-title">Professor-Aligned News Authenticity Classifier</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="hero-subtitle">This deployment app mirrors the notebook pipeline: structural cleaning, text normalization, text cleaning, tokenization, stopword removal, POS-aware lemmatization, TF-IDF vectorization, tuned model selection, and final prediction.</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="info-panel">Deployment is synchronized to the enhanced notebook flow. The app reads pipeline artifacts only from the <code>Models</code> folder, uses the same preprocessing steps as the notebook, and reads the saved benchmark metadata when available.</div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="hero-title">News Classification</div>', unsafe_allow_html=True)
+    
 
-    selected_model, threshold, min_chars, max_chars, extraction_strategy = render_sidebar()
-    if not selected_model:
-        return
+    selected_model, min_chars, max_chars = render_sidebar()
 
-    tab_predict, tab_url, tab_benchmark, tab_pipeline = st.tabs(
-        ["Predict", "Analyze URL", "Benchmark", "Pipeline"]
+    tab_predict, tab_benchmark, tab_pipeline = st.tabs(
+        ["Predict", "Benchmark", "Pipeline"]
     )
 
     with tab_predict:
-        render_predict_tab(selected_model, threshold, min_chars, max_chars)
-    with tab_url:
-        render_url_tab(selected_model, threshold, min_chars, max_chars, extraction_strategy)
+        render_predict_tab(selected_model, min_chars, max_chars)
     with tab_benchmark:
         render_benchmark_tab()
     with tab_pipeline:
