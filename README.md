@@ -23,6 +23,12 @@ This project implements a fake news classification workflow using classical mach
 - `assets/`
   Visual assets used by the app and the README.
 
+## Dataset Source
+
+The fake and real news dataset used in this project comes from Kaggle:
+
+- https://www.kaggle.com/datasets/bhavikjikadara/fake-news-detection
+
 ## Application Overview
 
 The Streamlit app is organized into three main sections:
