@@ -1312,7 +1312,7 @@ def render_styled_table(dataframe: pd.DataFrame, formatters: dict | None = None)
 
 
 def render_preprocessing_trace(trace: dict) -> None:
-    with st.expander("Show Professor-Aligned Preprocessing Trace", expanded=True):
+    with st.expander("Show Preprocessing Trace", expanded=True):
         stage_rows = [
             ("Text Normalization", trace["normalized_text"][:500]),
             ("Text Cleaning", trace["clean_text"][:500]),
@@ -2273,7 +2273,7 @@ def render_predict_tab(selected_model: str, min_chars: int, max_chars: int):
             st.warning(message)
             return
 
-        with st.spinner("Running synchronized professor-aligned prediction..."):
+        with st.spinner("Running synchronized prediction..."):
             prediction = predict_news(text, DEFAULT_THRESHOLD, selected_model)
         render_result_card(prediction)
         render_preprocessing_trace(prediction["trace"])

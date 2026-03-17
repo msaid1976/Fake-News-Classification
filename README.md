@@ -1,6 +1,6 @@
 # Fake News Classification
 
-This project implements a professor-aligned fake news classification workflow using classical machine learning for binary text classification. It includes a full training notebook, exported model artifacts, and a synchronized Streamlit app with `Predict`, `Dashboard`, and `News Classification Pipeline` tabs.
+This project implements a fake news classification workflow using classical machine learning for binary text classification. It includes a full training notebook, exported model artifacts, and a synchronized Streamlit app with `Predict`, `Dashboard`, and `News Classification Pipeline` tabs.
 
 ## Highlights
 
@@ -18,8 +18,6 @@ This project implements a professor-aligned fake news classification workflow us
   Main notebook for preprocessing, training, tuning, evaluation, and artifact export.
 - `AppNewsClassification.py`
   Main Streamlit deployment app aligned with the notebook outputs.
-- `App.py`
-  Older app variant kept for reference.
 - `requirements.txt`
   Project dependencies.
 - `assets/`
@@ -36,7 +34,7 @@ The Streamlit app is organized into three main sections:
 - `News Classification Pipeline`
   Show the final pipeline diagram used for presentation and documentation.
 
-## Professor-Aligned 11-Stage Pipeline
+## 11-Stage Pipeline
 
 | Stage | Name | Description |
 | --- | --- | --- |
@@ -121,15 +119,13 @@ Validation uses `StratifiedKFold`, with additional repeated stratified cross-val
 
 ```text
 Fake-News-Classification/
-|-- App.py
 |-- AppNewsClassification.py
 |-- Dataset/
 |-- Models/
 |-- assets/
 |-- News_Classification.ipynb
 |-- README.md
-|-- requirements.txt
-`-- sample.txt
+`-- requirements.txt
 ```
 
 ## Important Folder Notes
