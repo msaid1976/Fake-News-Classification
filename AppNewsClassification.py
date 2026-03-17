@@ -1,7 +1,11 @@
+import base64
+import ast
+import json
 import os
 import re
 import pickle
 import string
+from io import StringIO
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -15,10 +19,19 @@ import requests
 import seaborn as sns
 import streamlit as st
 from bs4 import BeautifulSoup
+from matplotlib.colors import LinearSegmentedColormap
 from nltk import pos_tag
 from nltk.corpus import stopwords, wordnet
 from nltk.stem import WordNetLemmatizer
 from nltk.tokenize import word_tokenize
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    auc,
+    classification_report,
+    precision_recall_curve,
+    roc_curve,
+)
+from sklearn.model_selection import train_test_split
 
 try:
     import trafilatura
@@ -45,12 +58,27 @@ RESULT_FILE_ORDER = [
 PRIMARY_COLORS = ["#1f6feb", "#2f9e44"]
 FAKE_COLOR = "#d94841"
 REAL_COLOR = "#3b874d"
+NOTEBOOK_PRIMARY_COLORS = ["#3CB371", "#0f6096"]
+BENCHMARK_FAKE_COLOR, BENCHMARK_REAL_COLOR = NOTEBOOK_PRIMARY_COLORS
 LABEL_MAP = {0: "Fake News", 1: "Real News"}
 DEFAULT_THRESHOLD = 0.50
 DEFAULT_MIN_CHARS = 50
 DEFAULT_MAX_CHARS = 1000
 REAL_SOURCE_SAMPLE_LIMIT = 5
 FAKE_PREDICT_SAMPLE_LIMIT = 5
+NOTEBOOK_BENCHMARK_CELLS = {
+    "baseline_comparison": 76,
+    "robust_cv": 78,
+    "tuned_comparison": 88,
+    "evaluation": 91,
+    "stage_comparison": 93,
+}
+MODEL_SLUG_TO_PIPELINE_FILE = {
+    "linear_svm": "linear_svm_pipeline.pkl",
+    "logistic_regression": "logistic_regression_pipeline.pkl",
+    "naive_bayes": "naive_bayes_pipeline.pkl",
+    "random_forest": "random_forest_pipeline.pkl",
+}
 
 NEWS_SOURCE_CATALOG = {
     "middle_east": {
@@ -204,6 +232,7 @@ def ensure_nltk_resource(resource_path: str, download_name: str) -> None:
 
 for resource_path, download_name in [
     ("tokenizers/punkt", "punkt"),
+    ("tokenizers/punkt_tab", "punkt_tab"),
     ("corpora/stopwords", "stopwords"),
     ("corpora/wordnet", "wordnet"),
     ("corpora/omw-1.4", "omw-1.4"),
@@ -214,7 +243,7 @@ for resource_path, download_name in [
 
 
 st.set_page_config(
-    page_title="News Classification Professor Pipeline News Classifier",
+    page_title="News Classification Demo",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -351,6 +380,33 @@ st.markdown(
         color: #ffffff !important;
     }
 
+    button[data-baseweb="tab"] {
+        background: rgba(255, 255, 255, 0.88);
+        color: #163243;
+        border: 1px solid rgba(51, 91, 132, 0.18);
+        border-radius: 12px 12px 0 0;
+        font-weight: 400;
+        padding: 0.55rem 1rem;
+        margin-right: 0.2rem;
+    }
+
+    button[data-baseweb="tab"] > div[data-testid="stMarkdownContainer"] p {
+        color: #163243;
+        font-weight: 400 !important;
+    }
+
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background: linear-gradient(135deg, #29496a, #335b84) !important;
+        color: #ffffff !important;
+        border-color: rgba(41, 73, 106, 0.72) !important;
+        box-shadow: 0 8px 18px rgba(51, 91, 132, 0.24);
+    }
+
+    button[data-baseweb="tab"][aria-selected="true"] > div[data-testid="stMarkdownContainer"] p {
+        color: #ffffff !important;
+        font-weight: 400 !important;
+    }
+
     .pipeline-card {
         background: rgba(255, 255, 255, 0.90);
         border: 1px solid var(--line);
@@ -461,6 +517,32 @@ st.markdown(
         padding: 0.8rem 0.95rem;
         border: 1px solid rgba(16, 32, 40, 0.10);
         margin: 0.35rem 0 0.75rem 0;
+    }
+
+    .artifact-note {
+        background: rgba(255, 255, 255, 0.92);
+        color: #163243;
+        border: 1px solid rgba(51, 91, 132, 0.16);
+        border-left: 6px solid #335b84;
+        border-radius: 14px;
+        padding: 0.85rem 1rem;
+        margin: 0.3rem 0 0.9rem 0;
+        box-shadow: 0 8px 22px rgba(16, 32, 40, 0.06);
+    }
+
+    .artifact-note strong {
+        display: block;
+        font-size: 0.98rem;
+        margin-bottom: 0.18rem;
+    }
+
+    .artifact-note code {
+        background: rgba(51, 91, 132, 0.08);
+        color: #163243;
+        padding: 0.18rem 0.4rem;
+        border-radius: 8px;
+        font-size: 0.84rem;
+        word-break: break-all;
     }
 
     .plain-alert {
@@ -642,13 +724,12 @@ def lemmatize_with_pos(tokens: list[str]) -> list[str]:
     return [lemmatizer.lemmatize(token, get_wordnet_pos(tag)) for token, tag in tagged_tokens]
 
 
-def preprocess_with_trace(text: str) -> dict:
+def preprocess_text_for_modeling(text: str) -> dict:
     normalized_text = normalize_text(text)
     clean_text = clean_text_content(normalized_text)
     tokens = tokenize_text(clean_text)
     filtered_tokens = remove_stopwords(tokens)
     lemmatized_tokens = lemmatize_with_pos(filtered_tokens)
-    cleaned_text = " ".join(lemmatized_tokens)
     return {
         "raw_text": text,
         "normalized_text": normalized_text,
@@ -656,8 +737,12 @@ def preprocess_with_trace(text: str) -> dict:
         "tokens": tokens,
         "tokens_no_stopwords": filtered_tokens,
         "lemmatized_tokens": lemmatized_tokens,
-        "cleaned_text": cleaned_text,
+        "cleaned_text": " ".join(lemmatized_tokens),
     }
+
+
+def preprocess_with_trace(text: str) -> dict:
+    return preprocess_text_for_modeling(text)
 
 
 def validate_text_input(
@@ -1084,7 +1169,6 @@ def build_real_sample_text(entry: dict, require_article_fetch: bool) -> str:
     return fallback_text
 
 
-@st.cache_data(show_spinner=False, ttl=1800)
 def fetch_source_bundle(source_key: str, model_file: str, min_chars: int, max_chars: int) -> dict:
     source_config = NEWS_SOURCE_CATALOG[source_key]
     feed_entries = []
@@ -1245,44 +1329,154 @@ def render_preprocessing_trace(trace: dict) -> None:
 
 
 def render_pipeline_tab() -> None:
-    st.markdown("### News Classification Pipeline")
-    stages = [
-        ("01", "Problem and Dataset", "Acquire the fake-news dataset and define the binary classification task."),
-        ("02", "Data Understanding", "Inspect structure, class balance, subject mix, and exploratory plots."),
-        ("03", "Data Cleaning", "Remove duplicates, standardize columns, and assemble the raw modeling text."),
-        ("04", "Text Preprocessing", "Normalize, clean, tokenize, remove stopwords, and lemmatize with POS tagging."),
-        ("05", "Data Split", "Perform stratified train/test split."),
-        ("06", "Word Vectors", "Transform cleaned text into TF-IDF vectors."),
-        ("07", "ML Algorithm Building", "Train baseline Logistic Regression, Naive Bayes, Linear SVM, and Random Forest."),
-        ("08", "Hyperparameter Tuning", "Run GridSearchCV and RandomizedSearchCV refinement."),
-        ("09", "Tuned Model", "Select the strongest tuned candidate using validation F1."),
-        ("10", "Evaluation", "Inspect confusion matrix, ROC, PR curve, and benchmark comparisons."),
-        ("11", "Prediction", "Use the final synchronized pipeline for live inference."),
-    ]
-
-    columns = st.columns(2)
-    for idx, (number, title, description) in enumerate(stages):
-        with columns[idx % 2]:
-            st.markdown(
-                f"""
-                <div class="pipeline-card">
-                    <div class="pipeline-step"><strong>Stage {number}</strong></div>
-                    <div class="pipeline-step"><strong>{title}</strong></div>
-                    <div class="pipeline-step">{description}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-
-def render_benchmark_tab() -> None:
-    results, result_path = load_benchmark_results()
-    if not results:
-        st.warning("No benchmark artifact was found. Run the notebook training cells first.")
+    selected_image_path = BASE_DIR / "assets" / "PipeLine.png"
+    if not selected_image_path.exists():
+        st.warning(f"Pipeline image not found: `{selected_image_path.name}`")
         return
 
-    st.caption(f"Loaded benchmark artifact: `{result_path}`")
+    left_spacer, image_col, right_spacer = st.columns([2, 6, 2])
+    with image_col:
+        st.image(str(selected_image_path), use_column_width=True)
 
+
+def parse_notebook_table_output(cell: dict, table_index: int = 0) -> pd.DataFrame:
+    html_outputs = []
+    for output in cell.get("outputs", []):
+        data = output.get("data", {})
+        if "text/html" in data:
+            html_outputs.append("".join(data["text/html"]))
+
+    if table_index >= len(html_outputs):
+        return pd.DataFrame()
+
+    table_df = pd.read_html(StringIO(html_outputs[table_index]))[0]
+    return table_df.loc[:, ~table_df.columns.astype(str).str.startswith("Unnamed")].copy()
+
+
+def parse_notebook_stream_text(cell: dict, stream_index: int = 0) -> str:
+    streams = [
+        "".join(output.get("text", []))
+        for output in cell.get("outputs", [])
+        if output.get("output_type") == "stream"
+    ]
+    if stream_index >= len(streams):
+        return ""
+    return streams[stream_index].strip()
+
+
+def parse_notebook_png_output(cell: dict, image_index: int = 0) -> bytes:
+    images = []
+    for output in cell.get("outputs", []):
+        data = output.get("data", {})
+        if "image/png" in data:
+            images.append(base64.b64decode("".join(data["image/png"])))
+    if image_index >= len(images):
+        return b""
+    return images[image_index]
+
+
+@st.cache_data(show_spinner=False)
+def load_notebook_benchmark_context() -> dict:
+    notebook_path = BASE_DIR / "News_Classification.ipynb"
+    if not notebook_path.exists():
+        return {}
+
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    cells = notebook.get("cells", [])
+
+    try:
+        tuned_cell = cells[NOTEBOOK_BENCHMARK_CELLS["tuned_comparison"]]
+        evaluation_cell = cells[NOTEBOOK_BENCHMARK_CELLS["evaluation"]]
+        return {
+            "baseline_comparison": parse_notebook_table_output(cells[NOTEBOOK_BENCHMARK_CELLS["baseline_comparison"]]),
+            "robust_cv": parse_notebook_table_output(cells[NOTEBOOK_BENCHMARK_CELLS["robust_cv"]]),
+            "tuned_comparison": parse_notebook_table_output(tuned_cell, table_index=0),
+            "best_model_metadata_table": parse_notebook_table_output(tuned_cell, table_index=1),
+            "stage_comparison": parse_notebook_table_output(cells[NOTEBOOK_BENCHMARK_CELLS["stage_comparison"]]),
+            "selection_summary": parse_notebook_stream_text(tuned_cell),
+            "classification_report_text": parse_notebook_stream_text(evaluation_cell),
+            "evaluation_figure_png": parse_notebook_png_output(evaluation_cell),
+            "stage_comparison_figure_png": parse_notebook_png_output(cells[NOTEBOOK_BENCHMARK_CELLS["stage_comparison"]]),
+        }
+    except (IndexError, ValueError):
+        return {}
+
+
+@st.cache_data(show_spinner=False)
+def build_benchmark_modeling_frame() -> pd.DataFrame:
+    fake_df = pd.read_csv(BASE_DIR / "Dataset" / "fake.csv")
+    fake_df["label"] = 0
+    true_df = pd.read_csv(BASE_DIR / "Dataset" / "true.csv")
+    true_df["label"] = 1
+
+    model_df = pd.concat([fake_df, true_df], ignore_index=True)
+    model_df["title"] = model_df["title"].fillna("")
+    model_df["text"] = model_df["text"].fillna("")
+    model_df["raw_text"] = (model_df["title"] + ". " + model_df["text"]).str.strip()
+    model_df = model_df[model_df["raw_text"].str.strip().ne("")].reset_index(drop=True)
+    model_df["cleaned_text"] = model_df["raw_text"].map(
+        lambda value: preprocess_text_for_modeling(value)["cleaned_text"]
+    )
+    model_df = model_df[model_df["cleaned_text"].str.strip().ne("")].reset_index(drop=True)
+    return model_df[["cleaned_text", "label"]]
+
+
+@st.cache_data(show_spinner=False)
+def recreate_notebook_test_split() -> tuple[pd.Series, pd.Series]:
+    model_df = build_benchmark_modeling_frame()
+    _, X_test, _, y_test = train_test_split(
+        model_df["cleaned_text"],
+        model_df["label"],
+        test_size=0.20,
+        random_state=42,
+        stratify=model_df["label"],
+    )
+    return X_test.reset_index(drop=True), y_test.reset_index(drop=True)
+
+
+def resolve_best_benchmark_model_file() -> str | None:
+    metadata = load_best_model_metadata()
+    best_slug = metadata.get("best_model_slug")
+    if best_slug:
+        return MODEL_SLUG_TO_PIPELINE_FILE.get(best_slug)
+    return select_default_model_file()
+
+
+@st.cache_data(show_spinner=False)
+def evaluate_best_benchmark_model(model_file: str) -> dict:
+    model_path = find_artifact(model_file)
+    if model_path is None:
+        return {}
+
+    pipeline = joblib.load(model_path)
+    X_test, y_test = recreate_notebook_test_split()
+    y_pred = pipeline.predict(X_test)
+    if hasattr(pipeline, "predict_proba"):
+        y_score = pipeline.predict_proba(X_test)[:, 1]
+    elif hasattr(pipeline, "decision_function"):
+        decision_score = pipeline.decision_function(X_test)
+        y_score = 1 / (1 + np.exp(-decision_score))
+    else:
+        y_score = y_pred.astype(float)
+
+    fpr, tpr, _ = roc_curve(y_test, y_score)
+    precision_vals, recall_vals, _ = precision_recall_curve(y_test, y_score)
+    return {
+        "model_file": model_file,
+        "y_test": y_test.tolist(),
+        "y_pred": y_pred.tolist(),
+        "y_score": y_score.tolist(),
+        "fpr": fpr.tolist(),
+        "tpr": tpr.tolist(),
+        "precision_curve": precision_vals.tolist(),
+        "recall_curve": recall_vals.tolist(),
+        "roc_auc": float(auc(fpr, tpr)),
+        "pr_auc": float(auc(recall_vals, precision_vals)),
+        "classification_report_text": classification_report(y_test, y_pred, digits=4),
+    }
+
+
+def build_legacy_summary_frame(results: dict) -> pd.DataFrame:
     rows = []
     for model_name, metrics in results.items():
         if not isinstance(metrics, dict):
@@ -1290,51 +1484,473 @@ def render_benchmark_tab() -> None:
         rows.append(
             {
                 "Model": model_name,
-                "Stage": metrics.get("stage", ""),
+                "Stage": str(metrics.get("stage", "")).title(),
                 "Search Method": metrics.get("search_method", ""),
                 "Accuracy": float(metrics.get("accuracy", 0)),
                 "Precision": float(metrics.get("precision", 0)),
                 "Recall": float(metrics.get("recall", 0)),
-                "F1": float(metrics.get("f1", 0)),
+                "F1 Score": float(metrics.get("f1", 0)),
                 "CV Mean": float(metrics.get("cv_mean", 0)),
+                "CV Std": float(metrics.get("cv_std", 0) or 0),
+                "Best Parameters": str(metrics.get("best_params", "")),
             }
         )
+    return pd.DataFrame(rows).sort_values(["CV Mean", "F1 Score"], ascending=False)
 
-    benchmark_df = pd.DataFrame(rows).sort_values(["CV Mean", "F1"], ascending=False)
+
+def extract_metric_results(raw_results: dict) -> dict:
+    if isinstance(raw_results, dict) and "legacy_results" in raw_results:
+        legacy_results = raw_results.get("legacy_results", {})
+        if isinstance(legacy_results, dict):
+            return legacy_results
+    return raw_results if isinstance(raw_results, dict) else {}
+
+
+def benchmark_payload_context(raw_results: dict) -> dict:
+    if not (isinstance(raw_results, dict) and raw_results.get("artifact_version")):
+        return {}
+
+    context = {}
+    for key in ["baseline_comparison", "robust_cv", "tuned_comparison", "best_model_metadata_table", "stage_comparison"]:
+        records = raw_results.get(key, [])
+        if isinstance(records, list):
+            context[key] = pd.DataFrame(records)
+    for key in ["selection_summary", "classification_report_text"]:
+        if raw_results.get(key):
+            context[key] = raw_results.get(key, "")
+    for key in ["evaluation_figure_png", "stage_comparison_figure_png"]:
+        if raw_results.get(key):
+            context[key] = raw_results[key]
+    if isinstance(raw_results.get("best_model_evaluation"), dict):
+        context["best_model_evaluation"] = raw_results["best_model_evaluation"]
+    return context
+
+
+def parse_best_model_name(selection_summary: str, metadata_table: pd.DataFrame) -> str:
+    for line in selection_summary.splitlines():
+        if line.startswith("Selected final tuned model:"):
+            return line.split(":", 1)[1].strip()
+    if not metadata_table.empty and {"Item", "Value"}.issubset(metadata_table.columns):
+        matched = metadata_table.loc[metadata_table["Item"] == "best_model_name", "Value"]
+        if not matched.empty:
+            return str(matched.iloc[0])
+    metadata = load_best_model_metadata()
+    return str(metadata.get("best_model_name", "Best Model"))
+
+
+def lookup_model_metrics(dataframe: pd.DataFrame, model_name: str) -> dict:
+    if dataframe.empty or "Model" not in dataframe.columns:
+        return {}
+    matched = dataframe[dataframe["Model"] == model_name]
+    if matched.empty:
+        return {}
+    return matched.iloc[0].to_dict()
+
+
+def render_notebook_figure(image_bytes: bytes, caption: str | None = None) -> None:
+    if not image_bytes:
+        return
+    st.image(image_bytes, use_column_width=True)
+    if caption:
+        st.caption(caption)
+
+
+def parse_classification_report_tables(report_text: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    class_rows = []
+    summary_rows = []
+    summary_labels = {"accuracy", "macro avg", "weighted avg", "micro avg", "samples avg"}
+    label_map = {"0": "Fake News", "1": "Real News", "fake": "Fake News", "real": "Real News"}
+
+    for raw_line in report_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("precision"):
+            continue
+
+        parts = re.split(r"\s{2,}", line)
+        if not parts:
+            continue
+
+        label = parts[0].strip()
+        normalized_label = label.lower()
+
+        if normalized_label == "accuracy" and len(parts) >= 3:
+            summary_rows.append(
+                {
+                    "Summary": "Accuracy",
+                    "Precision": np.nan,
+                    "Recall": np.nan,
+                    "F1 Score": float(parts[1]),
+                    "Support": int(float(parts[2])),
+                }
+            )
+            continue
+
+        if len(parts) < 5:
+            continue
+
+        row = {
+            "Label": label_map.get(normalized_label, label.title()),
+            "Precision": float(parts[1]),
+            "Recall": float(parts[2]),
+            "F1 Score": float(parts[3]),
+            "Support": int(float(parts[4])),
+        }
+
+        if normalized_label in summary_labels:
+            summary_rows.append({"Summary": row["Label"], **{key: row[key] for key in ["Precision", "Recall", "F1 Score", "Support"]}})
+        else:
+            class_rows.append(row)
+
+    return pd.DataFrame(class_rows), pd.DataFrame(summary_rows)
+
+
+def render_classification_report_block(report_text: str) -> None:
+    st.markdown("#### Classification Report")
+    class_df, summary_df = parse_classification_report_tables(report_text)
+    if class_df.empty and summary_df.empty:
+        st.code(report_text.strip(), language="text")
+        return
+
+    formatter = {
+        "Precision": "{:.4f}",
+        "Recall": "{:.4f}",
+        "F1 Score": "{:.4f}",
+    }
+    if not summary_df.empty and "Summary" in summary_df.columns:
+        summary_lookup = {
+            str(row["Summary"]).strip().lower(): row
+            for _, row in summary_df.iterrows()
+        }
+        metric_cols = st.columns(4)
+        accuracy_row = summary_lookup.get("accuracy")
+        macro_row = summary_lookup.get("Macro Avg".lower())
+        weighted_row = summary_lookup.get("Weighted Avg".lower())
+        total_support = ""
+        if accuracy_row is not None:
+            metric_cols[0].metric("Accuracy", f"{float(accuracy_row['F1 Score']):.4f}")
+            total_support = f"{int(accuracy_row['Support']):,}"
+        if macro_row is not None:
+            metric_cols[1].metric("Macro F1", f"{float(macro_row['F1 Score']):.4f}")
+        if weighted_row is not None:
+            metric_cols[2].metric("Weighted F1", f"{float(weighted_row['F1 Score']):.4f}")
+        if total_support:
+            metric_cols[3].metric("Support", total_support)
+
+    if not class_df.empty:
+        st.markdown("##### Per-Class Metrics")
+        render_styled_table(class_df, formatters=formatter)
+    if not summary_df.empty:
+        st.markdown("##### Summary Metrics")
+        render_styled_table(summary_df, formatters=formatter)
+
+
+def build_dashboard_winners_table(
+    stage_comparison_df: pd.DataFrame,
+    baseline_comparison_df: pd.DataFrame,
+    tuned_comparison_df: pd.DataFrame,
+) -> pd.DataFrame:
+    comparison_df = stage_comparison_df.copy()
+    if comparison_df.empty:
+        frames = []
+        if not baseline_comparison_df.empty:
+            baseline_df = baseline_comparison_df.copy()
+            baseline_df["Stage"] = "Baseline"
+            frames.append(baseline_df)
+        if not tuned_comparison_df.empty:
+            tuned_df = tuned_comparison_df.copy()
+            tuned_df["Stage"] = "Tuned"
+            frames.append(tuned_df)
+        if frames:
+            comparison_df = pd.concat(frames, ignore_index=True)
+
+    required_columns = ["Model", "Stage", "Accuracy", "Precision", "Recall", "F1 Score"]
+    if comparison_df.empty or not set(required_columns).issubset(comparison_df.columns):
+        return pd.DataFrame()
+
+    ranking_df = comparison_df[required_columns].copy()
+    for metric in ["Accuracy", "Precision", "Recall", "F1 Score"]:
+        ranking_df[metric] = pd.to_numeric(ranking_df[metric], errors="coerce")
+    ranking_df["Stage"] = ranking_df["Stage"].astype(str).str.title()
+    ranking_df = ranking_df.sort_values(
+        by=["Model", "F1 Score", "Accuracy", "Precision", "Recall"],
+        ascending=[True, False, False, False, False],
+    )
+    winners_df = ranking_df.groupby("Model", as_index=False).first()
+    winners_df.insert(1, "Best Version", winners_df["Model"] + " " + winners_df["Stage"])
+    winners_df = winners_df.rename(columns={"Model": "Model Family", "Stage": "Selected Stage"})
+    winners_df = winners_df.sort_values(by=["F1 Score", "Accuracy"], ascending=[False, False]).reset_index(drop=True)
+    return winners_df[
+        ["Model Family", "Best Version", "Selected Stage", "Accuracy", "Precision", "Recall", "F1 Score"]
+    ]
+
+
+def render_best_model_evaluation(evaluation: dict, best_model_name: str) -> None:
+    if not evaluation:
+        st.warning("Best-model evaluation could not be reconstructed from the saved artifacts.")
+        return
+
+    y_test = np.array(evaluation["y_test"])
+    y_pred = np.array(evaluation["y_pred"])
+    fpr = np.array(evaluation["fpr"])
+    tpr = np.array(evaluation["tpr"])
+    recall_vals = np.array(evaluation["recall_curve"])
+    precision_vals = np.array(evaluation["precision_curve"])
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Final Tuned Model", best_model_name)
+    metric_cols[1].metric("ROC AUC", f"{evaluation['roc_auc']:.4f}")
+    metric_cols[2].metric("PR AUC", f"{evaluation['pr_auc']:.4f}")
+    metric_cols[3].metric("Test Samples", f"{len(y_test):,}")
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 5.5))
+    ConfusionMatrixDisplay.from_predictions(
+        y_test,
+        y_pred,
+        display_labels=["Fake", "Real"],
+        cmap="Blues",
+        colorbar=False,
+        ax=axes[0],
+    )
+    axes[0].set_title(f"{best_model_name} Confusion Matrix", fontsize=14, fontweight="bold")
+
+    axes[1].plot(fpr, tpr, color=BENCHMARK_REAL_COLOR, linewidth=2.5, label=f"AUC = {evaluation['roc_auc']:.4f}")
+    axes[1].plot([0, 1], [0, 1], linestyle="--", color="gray")
+    axes[1].set_title("ROC Curve", fontsize=14, fontweight="bold")
+    axes[1].set_xlabel("False Positive Rate")
+    axes[1].set_ylabel("True Positive Rate")
+    axes[1].legend(frameon=False)
+    axes[1].grid(alpha=0.25, linestyle="--")
+
+    axes[2].plot(
+        recall_vals,
+        precision_vals,
+        color=BENCHMARK_FAKE_COLOR,
+        linewidth=2.5,
+        label=f"AUC = {evaluation['pr_auc']:.4f}",
+    )
+    axes[2].set_title("Precision-Recall Curve", fontsize=14, fontweight="bold")
+    axes[2].set_xlabel("Recall")
+    axes[2].set_ylabel("Precision")
+    axes[2].legend(frameon=False)
+    axes[2].grid(alpha=0.25, linestyle="--")
+
+    plt.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+    render_classification_report_block(evaluation["classification_report_text"])
+
+
+def render_metric_heatmap(dataframe: pd.DataFrame, title: str) -> None:
+    if dataframe.empty:
+        return
+    metric_columns = [column for column in ["Accuracy", "Precision", "Recall", "F1 Score", "CV Mean"] if column in dataframe.columns]
+    if not metric_columns:
+        return
+
+    heatmap_df = dataframe.set_index("Model")[metric_columns]
+    dashboard_cmap = LinearSegmentedColormap.from_list(
+        "dashboard_metrics",
+        ["#eef6f4", "#9fd4bf", "#3CB371", "#0f6096"],
+    )
+    st.markdown(f"#### {title}")
+    fig, ax = plt.subplots(figsize=(7.6, max(3.1, len(heatmap_df) * 0.72)))
+    fig.patch.set_facecolor("#f5f9fb")
+    ax.set_facecolor("#ffffff")
+    sns.heatmap(
+        heatmap_df,
+        annot=True,
+        fmt=".4f",
+        cmap=dashboard_cmap,
+        linewidths=1.2,
+        linecolor="#ffffff",
+        cbar=True,
+        cbar_kws={"shrink": 0.72, "pad": 0.02},
+        annot_kws={"fontsize": 9, "fontweight": "semibold", "color": "#163243"},
+        ax=ax,
+    )
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.tick_params(axis="x", labelrotation=0, labelsize=9)
+    ax.tick_params(axis="y", labelrotation=0, labelsize=10)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    plt.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+
+
+def render_benchmark_tab() -> None:
+    raw_results, result_path = load_benchmark_results()
+    if not raw_results:
+        st.warning("No benchmark artifact was found. Run the notebook training cells first.")
+        return
+
+    artifact_name = Path(result_path).name if result_path else "benchmark_results.pkl"
+    st.markdown(
+        f"""
+        <div class="artifact-note">
+            <strong>Loaded Benchmark Artifact</strong>
+            <div>Source file: <code>{artifact_name}</code></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    metric_results = extract_metric_results(raw_results)
+    notebook_context = load_notebook_benchmark_context()
+    notebook_context.update(benchmark_payload_context(raw_results))
+    summary_df = build_legacy_summary_frame(metric_results)
+
+    tuned_comparison_df = notebook_context.get("tuned_comparison", pd.DataFrame())
+    if tuned_comparison_df.empty:
+        tuned_comparison_df = summary_df.copy()
+
+    stage_comparison_df = notebook_context.get("stage_comparison", pd.DataFrame())
+    robust_cv_df = notebook_context.get("robust_cv", pd.DataFrame())
+    baseline_comparison_df = notebook_context.get("baseline_comparison", pd.DataFrame())
+    metadata_table = notebook_context.get("best_model_metadata_table", pd.DataFrame())
+    selection_summary = notebook_context.get("selection_summary", "")
+    best_model_name = parse_best_model_name(selection_summary, metadata_table)
+    dashboard_winners_df = build_dashboard_winners_table(
+        stage_comparison_df=stage_comparison_df,
+        baseline_comparison_df=baseline_comparison_df,
+        tuned_comparison_df=tuned_comparison_df,
+    )
+
+    if not dashboard_winners_df.empty:
+        st.markdown("### Best Of 4 Models")
+        render_styled_table(
+            dashboard_winners_df,
+            formatters={
+                "Accuracy": "{:.4f}",
+                "Precision": "{:.4f}",
+                "Recall": "{:.4f}",
+                "F1 Score": "{:.4f}",
+            },
+        )
+
+    st.markdown("### Tuned Model Summary")
     render_styled_table(
-        benchmark_df,
+        tuned_comparison_df,
         formatters={
             "Accuracy": "{:.4f}",
             "Precision": "{:.4f}",
             "Recall": "{:.4f}",
-            "F1": "{:.4f}",
+            "F1 Score": "{:.4f}",
+            "Best CV F1": "{:.4f}",
             "CV Mean": "{:.4f}",
+            "CV Std": "{:.4f}",
         },
     )
-
-    if benchmark_df.empty:
-        return
-
-    best_row = benchmark_df.iloc[0]
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Best Model", best_row["Model"])
-    metric_cols[1].metric("Search", best_row["Search Method"] or "N/A")
-    metric_cols[2].metric("F1", f"{best_row['F1']:.4f}")
-    metric_cols[3].metric("CV Mean", f"{best_row['CV Mean']:.4f}")
-
-    chart_df = benchmark_df.melt(
-        id_vars=["Model", "Stage", "Search Method"],
-        value_vars=["Accuracy", "Precision", "Recall", "F1", "CV Mean"],
-        var_name="Metric",
-        value_name="Score",
+    st.markdown("<div style='height: 0.9rem;'></div>", unsafe_allow_html=True)
+    render_metric_heatmap(
+        tuned_comparison_df.rename(columns={"Best CV F1": "CV Mean"}),
+        "Tuned Model Metric Heatmap",
     )
-    fig, ax = plt.subplots(figsize=(11, 5.5))
-    sns.barplot(data=chart_df, x="Metric", y="Score", hue="Model", ax=ax)
-    ax.set_ylim(0, 1.05)
-    ax.set_title("Stored Notebook Benchmark Comparison", fontsize=14, fontweight="bold")
-    ax.grid(axis="y", linestyle="--", alpha=0.25)
-    ax.legend(frameon=False, bbox_to_anchor=(1.02, 1), loc="upper left")
-    st.pyplot(fig, use_container_width=True)
+
+    if selection_summary:
+        st.markdown("#### Notebook Selection Summary")
+        st.code(selection_summary, language="text")
+    if not metadata_table.empty:
+        render_styled_table(metadata_table)
+
+    if not stage_comparison_df.empty:
+        st.markdown("### Baseline vs Tuned Comparison")
+        render_styled_table(
+            stage_comparison_df,
+            formatters={
+                "Accuracy": "{:.4f}",
+                "Precision": "{:.4f}",
+                "Recall": "{:.4f}",
+                "F1 Score": "{:.4f}",
+            },
+        )
+        st.markdown("#### Baseline vs Tuned Model F1 Scores")
+        fig, ax = plt.subplots(figsize=(8.2, 4.3))
+        sns.barplot(
+            data=stage_comparison_df,
+            x="Model",
+            y="F1 Score",
+            hue="Stage",
+            palette=NOTEBOOK_PRIMARY_COLORS,
+            ax=ax,
+        )
+        ax.set_xlabel("Model")
+        ax.set_ylabel("F1 Score")
+        ax.set_ylim(0.94, 1.0)
+        ax.grid(axis="y", linestyle="--", alpha=0.25)
+        ax.legend(title="Stage", frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
+        plt.xticks(rotation=15)
+        plt.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+
+    if not baseline_comparison_df.empty:
+        st.markdown("### Baseline Model Results")
+        render_styled_table(
+            baseline_comparison_df,
+            formatters={
+                "Accuracy": "{:.4f}",
+                "Precision": "{:.4f}",
+                "Recall": "{:.4f}",
+                "F1 Score": "{:.4f}",
+                "CV F1 Mean": "{:.4f}",
+                "CV F1 Std": "{:.4f}",
+            },
+        )
+
+    if not robust_cv_df.empty:
+        st.markdown("### Robust Cross-Validation Check")
+        render_styled_table(
+            robust_cv_df,
+            formatters={
+                "Stratified CV Mean": "{:.4f}",
+                "Stratified CV Std": "{:.4f}",
+                "Repeated Stratified CV Mean": "{:.4f}",
+                "Repeated Stratified CV Std": "{:.4f}",
+                "Best Baseline Test F1": "{:.4f}",
+            },
+        )
+        robust_plot_df = robust_cv_df.melt(
+            id_vars=["Model"],
+            value_vars=["Stratified CV Mean", "Repeated Stratified CV Mean", "Best Baseline Test F1"],
+            var_name="Metric",
+            value_name="Score",
+        )
+        st.markdown("#### Robust Validation Consistency")
+        fig, ax = plt.subplots(figsize=(8.2, 4.3))
+        sns.barplot(
+            data=robust_plot_df,
+            x="Model",
+            y="Score",
+            hue="Metric",
+            palette=[NOTEBOOK_PRIMARY_COLORS[0], NOTEBOOK_PRIMARY_COLORS[1], "#88c2b0"],
+            ax=ax,
+        )
+        ax.set_xlabel("Model")
+        ax.set_ylabel("Score")
+        ax.set_ylim(0.99, 1.0)
+        ax.grid(axis="y", linestyle="--", alpha=0.25)
+        ax.legend(frameon=False)
+        plt.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+
+    st.markdown("### Final Tuned Model Evaluation")
+    best_model_row = lookup_model_metrics(tuned_comparison_df, best_model_name)
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Final Tuned Model", best_model_name)
+    metric_cols[1].metric("Best CV F1", f"{float(best_model_row.get('Best CV F1', best_model_row.get('CV Mean', 0))):.4f}")
+    metric_cols[2].metric("Test F1", f"{float(best_model_row.get('F1 Score', 0)):.4f}")
+    metric_cols[3].metric("Search", str(best_model_row.get("Search Method", "Notebook")) or "Notebook")
+
+    evaluation_figure = notebook_context.get("evaluation_figure_png", b"")
+    if evaluation_figure:
+        render_notebook_figure(evaluation_figure, "Notebook output: confusion matrix, ROC curve, and precision-recall curve")
+        report_text = notebook_context.get("classification_report_text", "")
+        if report_text:
+            render_classification_report_block(report_text)
+    else:
+        best_model_file = resolve_best_benchmark_model_file()
+        evaluation = notebook_context.get("best_model_evaluation", {})
+        if not evaluation and best_model_file:
+            evaluation = evaluate_best_benchmark_model(best_model_file)
+        render_best_model_evaluation(evaluation, best_model_name)
 
 
 def render_sidebar():
@@ -1423,12 +2039,16 @@ def render_sidebar():
             clear_single_input()
             reset_sample_selection_state()
             with st.spinner("Loading source samples..."):
-                st.session_state.loaded_source_bundle = fetch_source_bundle(
-                    selected_source_key,
-                    selected_model,
-                    st.session_state.fetch_min_chars,
-                    st.session_state.fetch_max_chars,
-                )
+                try:
+                    st.session_state.loaded_source_bundle = fetch_source_bundle(
+                        selected_source_key,
+                        selected_model,
+                        st.session_state.fetch_min_chars,
+                        st.session_state.fetch_max_chars,
+                    )
+                except Exception as exc:
+                    st.session_state.loaded_source_bundle = None
+                    st.error(f"Failed to load news samples: {exc}")
 
         loaded_bundle = st.session_state.loaded_source_bundle
         current_loaded_bundle = (
@@ -1444,6 +2064,8 @@ def render_sidebar():
                 f"Real samples: {len(current_loaded_bundle['real_samples'])} | "
                 f"Fake samples: {len(current_loaded_bundle['fake_samples'])}"
             )
+            for note in current_loaded_bundle.get("load_notes", []):
+                st.info(note)
             if len(current_loaded_bundle["real_samples"]) < REAL_SOURCE_SAMPLE_LIMIT:
                 st.warning(
                     f"Only {len(current_loaded_bundle['real_samples'])} real samples could be loaded for this source."
@@ -1664,7 +2286,7 @@ def main():
     selected_model, min_chars, max_chars = render_sidebar()
 
     tab_predict, tab_benchmark, tab_pipeline = st.tabs(
-        ["Predict", "Benchmark", "Pipeline"]
+        ["Predict", "Dashboard", "News Classification Pipeline"]
     )
 
     with tab_predict:
