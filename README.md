@@ -119,10 +119,10 @@ Validation uses `StratifiedKFold`, with additional repeated stratified cross-val
 
 ```text
 Fake-News-Classification/
+|-- 📁 Dataset/
+|-- 📁 Models/
+|-- 📁 assets/
 |-- AppNewsClassification.py
-|-- Dataset/
-|-- Models/
-|-- assets/
 |-- News_Classification.ipynb
 |-- README.md
 `-- requirements.txt
