@@ -582,6 +582,38 @@ st.markdown(
         margin-right: 0.35rem;
     }
 
+    .dashboard-stat-card {
+        background: rgba(255, 255, 255, 0.96);
+        border: 1px solid rgba(51, 91, 132, 0.12);
+        border-radius: 16px;
+        padding: 0.8rem 1rem 0.9rem 1rem;
+        box-shadow: 0 8px 22px rgba(16, 32, 40, 0.06);
+        min-height: 104px;
+    }
+
+    .dashboard-stat-label {
+        font-size: 0.92rem;
+        font-weight: 600;
+        color: rgba(22, 50, 67, 0.72);
+        margin-bottom: 0.35rem;
+    }
+
+    .dashboard-stat-value {
+        font-size: 1.08rem;
+        line-height: 1.2;
+        font-weight: 700;
+        color: #163243;
+    }
+
+    .dashboard-stat-value.large {
+        font-size: 1.7rem;
+        font-weight: 800;
+    }
+
+    .element-container.st-emotion-cache-1xanlfj.e1f1d6gn4 {
+        margin-bottom: 1.4rem;
+    }
+
     .summary-note {
         margin: 0.3rem 0 0.9rem 0;
     }
@@ -1362,6 +1394,46 @@ def render_styled_table(dataframe: pd.DataFrame, formatters: dict | None = None)
     st.markdown(f'<div class="table-shell">{table_html}</div>', unsafe_allow_html=True)
 
 
+def render_dashboard_winners_table(dataframe: pd.DataFrame) -> None:
+    if dataframe.empty:
+        return
+
+    display_df = dataframe.copy()
+    for metric in ["Accuracy", "Precision", "Recall", "F1 Score"]:
+        if metric in display_df.columns:
+            display_df[metric] = display_df[metric].map(lambda value: "" if pd.isna(value) else f"{float(value):.4f}")
+
+    if "Selected Stage" in display_df.columns:
+        display_df["Selected Stage"] = display_df["Selected Stage"].map(
+            lambda value: "<u>Tuned</u>" if str(value).strip().lower() == "tuned" else html.escape(str(value))
+        )
+
+    if "Best Version" in display_df.columns:
+        display_df["Best Version"] = display_df["Best Version"].map(
+            lambda value: html.escape(str(value)).replace("Tuned", "<u>Tuned</u>")
+        )
+
+    table_html = display_df.to_html(index=False, escape=False, border=0)
+    st.markdown(f'<div class="table-shell">{table_html}</div>', unsafe_allow_html=True)
+
+
+def render_stat_cards(cards: list[tuple[str, str]]) -> None:
+    if not cards:
+        return
+
+    columns = st.columns(len(cards))
+    for column, (label, value) in zip(columns, cards):
+        column.markdown(
+            f"""
+            <div class="dashboard-stat-card">
+                <div class="dashboard-stat-label">{label}</div>
+                <div class="dashboard-stat-value large">{value}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_preprocessing_trace(trace: dict) -> None:
     with st.expander("Show Preprocessing Trace", expanded=True):
         stage_rows = [
@@ -1601,7 +1673,9 @@ def lookup_model_metrics(dataframe: pd.DataFrame, model_name: str) -> dict:
 def render_notebook_figure(image_bytes: bytes, caption: str | None = None) -> None:
     if not image_bytes:
         return
-    st.image(image_bytes, use_column_width=True)
+    left_spacer, image_col, right_spacer = st.columns([0.05, 0.9, 0.05])
+    with image_col:
+        st.image(image_bytes, use_column_width=True)
     if caption:
         st.caption(caption)
 
@@ -1672,20 +1746,21 @@ def render_classification_report_block(report_text: str) -> None:
             str(row["Summary"]).strip().lower(): row
             for _, row in summary_df.iterrows()
         }
-        metric_cols = st.columns(4)
         accuracy_row = summary_lookup.get("accuracy")
         macro_row = summary_lookup.get("Macro Avg".lower())
         weighted_row = summary_lookup.get("Weighted Avg".lower())
-        total_support = ""
+        cards = []
         if accuracy_row is not None:
-            metric_cols[0].metric("Accuracy", f"{float(accuracy_row['F1 Score']):.4f}")
-            total_support = f"{int(accuracy_row['Support']):,}"
+            cards.append(("Accuracy", f"{float(accuracy_row['F1 Score']):.4f}", True))
         if macro_row is not None:
-            metric_cols[1].metric("Macro F1", f"{float(macro_row['F1 Score']):.4f}")
+            cards.append(("Macro F1", f"{float(macro_row['F1 Score']):.4f}", True))
         if weighted_row is not None:
-            metric_cols[2].metric("Weighted F1", f"{float(weighted_row['F1 Score']):.4f}")
-        if total_support:
-            metric_cols[3].metric("Support", total_support)
+            cards.append(("Weighted F1", f"{float(weighted_row['F1 Score']):.4f}", True))
+        if accuracy_row is not None and accuracy_row.get("Support", "") != "":
+            cards.append(("Support", f"{int(accuracy_row['Support']):,}", True))
+
+        if cards:
+            render_stat_cards([(label, value) for label, value, _large_value in cards])
 
     if not class_df.empty:
         st.markdown("##### Per-Class Metrics")
@@ -1747,13 +1822,16 @@ def render_best_model_evaluation(evaluation: dict, best_model_name: str) -> None
     recall_vals = np.array(evaluation["recall_curve"])
     precision_vals = np.array(evaluation["precision_curve"])
 
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Final Tuned Model", best_model_name)
-    metric_cols[1].metric("ROC AUC", f"{evaluation['roc_auc']:.4f}")
-    metric_cols[2].metric("PR AUC", f"{evaluation['pr_auc']:.4f}")
-    metric_cols[3].metric("Test Samples", f"{len(y_test):,}")
+    render_stat_cards(
+        [
+            ("Final Tuned Model", best_model_name),
+            ("ROC AUC", f"{evaluation['roc_auc']:.4f}"),
+            ("PR AUC", f"{evaluation['pr_auc']:.4f}"),
+            ("Test Samples", f"{len(y_test):,}"),
+        ]
+    )
 
-    fig, axes = plt.subplots(1, 3, figsize=(20, 5.5))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 4.95))
     ConfusionMatrixDisplay.from_predictions(
         y_test,
         y_pred,
@@ -1803,9 +1881,9 @@ def render_metric_heatmap(dataframe: pd.DataFrame, title: str) -> None:
         ["#eef6f4", "#9fd4bf", "#3CB371", "#0f6096"],
     )
     st.markdown(f"#### {title}")
-    fig, ax = plt.subplots(figsize=(7.6, max(3.1, len(heatmap_df) * 0.72)))
-    fig.patch.set_facecolor("#f5f9fb")
-    ax.set_facecolor("#ffffff")
+    fig, ax = plt.subplots(figsize=(6.08, max(2.48, len(heatmap_df) * 0.576)))
+    fig.patch.set_alpha(0)
+    ax.set_facecolor("none")
     sns.heatmap(
         heatmap_df,
         annot=True,
@@ -1826,6 +1904,20 @@ def render_metric_heatmap(dataframe: pd.DataFrame, title: str) -> None:
         spine.set_visible(False)
     plt.tight_layout()
     st.pyplot(fig, use_container_width=True)
+
+
+def render_benchmark_summary_cards(best_model_name: str, model_row: dict) -> None:
+    if not model_row:
+        return
+
+    cards = [
+        ("Best Model", best_model_name, True),
+        ("Accuracy", f"{float(model_row.get('Accuracy', 0)):.4f}", True),
+        ("Recall", f"{float(model_row.get('Recall', 0)):.4f}", True),
+        ("F1", f"{float(model_row.get('F1 Score', 0)):.4f}", True),
+    ]
+
+    render_stat_cards([(label, value) for label, value, _large_value in cards])
 
 
 def render_benchmark_tab() -> None:
@@ -1859,42 +1951,16 @@ def render_benchmark_tab() -> None:
     metadata_table = notebook_context.get("best_model_metadata_table", pd.DataFrame())
     selection_summary = notebook_context.get("selection_summary", "")
     best_model_name = parse_best_model_name(selection_summary, metadata_table)
+    best_model_row = lookup_model_metrics(tuned_comparison_df, best_model_name)
+    if not best_model_row and not summary_df.empty:
+        best_model_row = lookup_model_metrics(summary_df, best_model_name)
     dashboard_winners_df = build_dashboard_winners_table(
         stage_comparison_df=stage_comparison_df,
         baseline_comparison_df=baseline_comparison_df,
         tuned_comparison_df=tuned_comparison_df,
     )
 
-    if not dashboard_winners_df.empty:
-        st.markdown("### Best Of 4 Models")
-        render_styled_table(
-            dashboard_winners_df,
-            formatters={
-                "Accuracy": "{:.4f}",
-                "Precision": "{:.4f}",
-                "Recall": "{:.4f}",
-                "F1 Score": "{:.4f}",
-            },
-        )
-
-    st.markdown("### Tuned Model Summary")
-    render_styled_table(
-        tuned_comparison_df,
-        formatters={
-            "Accuracy": "{:.4f}",
-            "Precision": "{:.4f}",
-            "Recall": "{:.4f}",
-            "F1 Score": "{:.4f}",
-            "Best CV F1": "{:.4f}",
-            "CV Mean": "{:.4f}",
-            "CV Std": "{:.4f}",
-        },
-    )
-    st.markdown("<div style='height: 0.9rem;'></div>", unsafe_allow_html=True)
-    render_metric_heatmap(
-        tuned_comparison_df.rename(columns={"Best CV F1": "CV Mean"}),
-        "Tuned Model Metric Heatmap",
-    )
+    render_benchmark_summary_cards(best_model_name, best_model_row)
 
     if selection_summary:
         st.markdown(
@@ -1907,37 +1973,8 @@ def render_benchmark_tab() -> None:
             unsafe_allow_html=True,
         )
     if not metadata_table.empty:
+        st.markdown("### Notebook Model Metadata")
         render_styled_table(metadata_table)
-
-    if not stage_comparison_df.empty:
-        st.markdown("### Baseline vs Tuned Comparison")
-        render_styled_table(
-            stage_comparison_df,
-            formatters={
-                "Accuracy": "{:.4f}",
-                "Precision": "{:.4f}",
-                "Recall": "{:.4f}",
-                "F1 Score": "{:.4f}",
-            },
-        )
-        st.markdown("#### Baseline vs Tuned Model F1 Scores")
-        fig, ax = plt.subplots(figsize=(8.2, 4.3))
-        sns.barplot(
-            data=stage_comparison_df,
-            x="Model",
-            y="F1 Score",
-            hue="Stage",
-            palette=NOTEBOOK_PRIMARY_COLORS,
-            ax=ax,
-        )
-        ax.set_xlabel("Model")
-        ax.set_ylabel("F1 Score")
-        ax.set_ylim(0.94, 1.0)
-        ax.grid(axis="y", linestyle="--", alpha=0.25)
-        ax.legend(title="Stage", frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
-        plt.xticks(rotation=15)
-        plt.tight_layout()
-        st.pyplot(fig, use_container_width=True)
 
     if not baseline_comparison_df.empty:
         st.markdown("### Baseline Model Results")
@@ -1952,6 +1989,10 @@ def render_benchmark_tab() -> None:
                 "CV F1 Std": "{:.4f}",
             },
         )
+
+    if not dashboard_winners_df.empty:
+        st.markdown("### Best Of 4 Baseline Models")
+        render_dashboard_winners_table(dashboard_winners_df)
 
     if not robust_cv_df.empty:
         st.markdown("### Robust Cross-Validation Check")
@@ -1972,7 +2013,9 @@ def render_benchmark_tab() -> None:
             value_name="Score",
         )
         st.markdown("#### Robust Validation Consistency")
-        fig, ax = plt.subplots(figsize=(8.2, 4.3))
+        fig, ax = plt.subplots(figsize=(6.56, 3.44))
+        fig.patch.set_alpha(0)
+        ax.set_facecolor("none")
         sns.barplot(
             data=robust_plot_df,
             x="Model",
@@ -1989,13 +2032,68 @@ def render_benchmark_tab() -> None:
         plt.tight_layout()
         st.pyplot(fig, use_container_width=True)
 
+    st.markdown("### Tuned Model Summary")
+    render_styled_table(
+        tuned_comparison_df,
+        formatters={
+            "Accuracy": "{:.4f}",
+            "Precision": "{:.4f}",
+            "Recall": "{:.4f}",
+            "F1 Score": "{:.4f}",
+            "Best CV F1": "{:.4f}",
+            "CV Mean": "{:.4f}",
+            "CV Std": "{:.4f}",
+        },
+    )
+    st.markdown("<div style='height: 0.9rem;'></div>", unsafe_allow_html=True)
+    render_metric_heatmap(
+        tuned_comparison_df.rename(columns={"Best CV F1": "CV Mean"}),
+        "Tuned Model Metric Heatmap",
+    )
+
+    if not stage_comparison_df.empty:
+        st.markdown("### Baseline vs Tuned Comparison")
+        render_styled_table(
+            stage_comparison_df,
+            formatters={
+                "Accuracy": "{:.4f}",
+                "Precision": "{:.4f}",
+                "Recall": "{:.4f}",
+                "F1 Score": "{:.4f}",
+            },
+        )
+        st.markdown("#### Baseline vs Tuned Model F1 Scores")
+        fig, ax = plt.subplots(figsize=(6.56, 3.44))
+        fig.patch.set_alpha(0)
+        ax.set_facecolor("none")
+        sns.barplot(
+            data=stage_comparison_df,
+            x="Model",
+            y="F1 Score",
+            hue="Stage",
+            palette=NOTEBOOK_PRIMARY_COLORS,
+            ax=ax,
+        )
+        ax.set_xlabel("Model")
+        ax.set_ylabel("F1 Score")
+        ax.set_ylim(0.94, 1.0)
+        ax.grid(axis="y", linestyle="--", alpha=0.25)
+        ax.legend(title="Stage", frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0)
+        plt.xticks(rotation=15)
+        plt.tight_layout()
+        st.pyplot(fig, use_container_width=True)
+
+    st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
     st.markdown("### Final Tuned Model Evaluation")
     best_model_row = lookup_model_metrics(tuned_comparison_df, best_model_name)
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Final Tuned Model", best_model_name)
-    metric_cols[1].metric("Best CV F1", f"{float(best_model_row.get('Best CV F1', best_model_row.get('CV Mean', 0))):.4f}")
-    metric_cols[2].metric("Test F1", f"{float(best_model_row.get('F1 Score', 0)):.4f}")
-    metric_cols[3].metric("Search", str(best_model_row.get("Search Method", "Notebook")) or "Notebook")
+    render_stat_cards(
+        [
+            ("Final Tuned Model", best_model_name),
+            ("Best CV F1", f"{float(best_model_row.get('Best CV F1', best_model_row.get('CV Mean', 0))):.4f}"),
+            ("Test F1", f"{float(best_model_row.get('F1 Score', 0)):.4f}"),
+            ("Search", str(best_model_row.get("Search Method", "Notebook")) or "Notebook"),
+        ]
+    )
 
     evaluation_figure = notebook_context.get("evaluation_figure_png", b"")
     if evaluation_figure:
