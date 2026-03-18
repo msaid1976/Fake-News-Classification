@@ -1,5 +1,6 @@
 import base64
 import ast
+import html
 import json
 import os
 import re
@@ -380,6 +381,10 @@ st.markdown(
         color: #ffffff !important;
     }
 
+    div[data-baseweb="tab-list"] {
+        gap: 1px;
+    }
+
     button[data-baseweb="tab"] {
         background: rgba(255, 255, 255, 0.88);
         color: #163243;
@@ -387,7 +392,7 @@ st.markdown(
         border-radius: 12px 12px 0 0;
         font-weight: 400;
         padding: 0.55rem 1rem;
-        margin-right: 0.2rem;
+        margin-right: 0;
     }
 
     button[data-baseweb="tab"] > div[data-testid="stMarkdownContainer"] p {
@@ -519,7 +524,8 @@ st.markdown(
         margin: 0.35rem 0 0.75rem 0;
     }
 
-    .artifact-note {
+    .artifact-note,
+    .summary-note {
         background: rgba(255, 255, 255, 0.92);
         color: #163243;
         border: 1px solid rgba(51, 91, 132, 0.16);
@@ -530,7 +536,8 @@ st.markdown(
         box-shadow: 0 8px 22px rgba(16, 32, 40, 0.06);
     }
 
-    .artifact-note strong {
+    .artifact-note strong,
+    .summary-note strong {
         display: block;
         font-size: 0.98rem;
         margin-bottom: 0.18rem;
@@ -543,6 +550,36 @@ st.markdown(
         border-radius: 8px;
         font-size: 0.84rem;
         word-break: break-all;
+    }
+
+    .analysis-note {
+        background: rgba(255, 255, 255, 0.92);
+        color: #163243;
+        border: 1px solid rgba(51, 91, 132, 0.16);
+        border-left: 6px solid #335b84;
+        border-radius: 14px;
+        padding: 0.85rem 1rem;
+        margin: 0.35rem 0 0.75rem 0;
+        box-shadow: 0 8px 22px rgba(16, 32, 40, 0.06);
+    }
+
+    .analysis-note strong {
+        display: inline;
+        font-size: 0.98rem;
+        margin-bottom: 0;
+        margin-right: 0.35rem;
+    }
+
+    .summary-note {
+        margin: 0.3rem 0 0.9rem 0;
+    }
+
+    .summary-note pre {
+        margin: 0.4rem 0 0;
+        white-space: pre-wrap;
+        font-family: "Consolas", "Courier New", monospace;
+        font-size: 0.88rem;
+        line-height: 1.45;
     }
 
     .plain-alert {
@@ -1846,8 +1883,15 @@ def render_benchmark_tab() -> None:
     )
 
     if selection_summary:
-        st.markdown("#### Notebook Selection Summary")
-        st.code(selection_summary, language="text")
+        st.markdown(
+            f"""
+            <div class="summary-note">
+                <strong>Notebook Selection Summary</strong>
+                <pre>{html.escape(selection_summary)}</pre>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     if not metadata_table.empty:
         render_styled_table(metadata_table)
 
@@ -2205,7 +2249,7 @@ def render_predict_tab(selected_model: str, min_chars: int, max_chars: int):
         )
     elif input_mode == "Use loaded samples":
         st.markdown(
-            '<div class="soft-note">Load samples from the sidebar first, or switch to <strong>Paste manually</strong> and enter article text directly.</div>',
+            '<div class="analysis-note"><strong>Load samples first.</strong>In <strong>Analysis Setup</strong>, choose a <strong>News Source</strong> under <strong>Generate Test Samples</strong>, or switch to <strong>Paste manually</strong>.</div>',
             unsafe_allow_html=True,
         )
 
@@ -2247,7 +2291,7 @@ def render_predict_tab(selected_model: str, min_chars: int, max_chars: int):
 
     if selected_model is None:
         st.markdown(
-            '<div class="soft-note">Please select a <strong>Trained Model</strong> before analyzing article text.</div>',
+            '<div class="analysis-note"><strong>Select a model first.</strong>Choose a <strong>Trained Model</strong> in <strong>Analysis Setup</strong> before analyzing article text.</div>',
             unsafe_allow_html=True,
         )
 
