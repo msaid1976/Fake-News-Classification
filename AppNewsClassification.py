@@ -1970,13 +1970,13 @@ def render_sidebar():
         st.session_state.selected_model_file = None
 
     with st.sidebar:
-        st.markdown("## Deployment Controls")
+        st.markdown("## Analysis Setup")
         if not available_models:
             st.error("No pipeline model artifacts were found in the `Models` folder.")
             return None, None, None
 
         selected_model = st.selectbox(
-            "Model Artifact",
+            "Trained Model",
             options=[None] + available_models,
             index=([None] + available_models).index(st.session_state.selected_model_file)
             if st.session_state.selected_model_file in ([None] + available_models)
@@ -1991,9 +1991,9 @@ def render_sidebar():
         st.session_state.selected_model_file = selected_model
 
         st.markdown("---")
-        st.markdown("### Analyze URL")
+        st.markdown("### Generate Test Samples")
         selected_source_key = st.selectbox(
-            "News URL",
+            "News Source",
             options=[None] + source_keys,
             index=([None] + source_keys).index(st.session_state.selected_source_key)
             if st.session_state.selected_source_key in ([None] + source_keys)
@@ -2247,7 +2247,7 @@ def render_predict_tab(selected_model: str, min_chars: int, max_chars: int):
 
     if selected_model is None:
         st.markdown(
-            '<div class="soft-note">Please select a <strong>Model Artifact</strong> before analyzing article text.</div>',
+            '<div class="soft-note">Please select a <strong>Trained Model</strong> before analyzing article text.</div>',
             unsafe_allow_html=True,
         )
 
@@ -2286,7 +2286,7 @@ def main():
     selected_model, min_chars, max_chars = render_sidebar()
 
     tab_predict, tab_benchmark, tab_pipeline = st.tabs(
-        ["Predict", "Dashboard", "News Classification Pipeline"]
+        ["Article Analysis", "Model Performance", "How It Works"]
     )
 
     with tab_predict:
