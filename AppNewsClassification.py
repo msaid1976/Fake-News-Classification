@@ -468,6 +468,18 @@ st.markdown(
         color: rgba(16, 32, 40, 0.58) !important;
     }
 
+    div[data-testid="stTextArea"] label p {
+        font-size: 1.08rem !important;
+        font-weight: 600 !important;
+        color: #163243 !important;
+    }
+
+    div[data-testid="stRadio"] > label p {
+        font-size: 1.08rem !important;
+        font-weight: 600 !important;
+        color: #163243 !important;
+    }
+
     .table-shell {
         background: #ffffff;
         border: 1px solid rgba(16, 32, 40, 0.12);
@@ -583,11 +595,13 @@ st.markdown(
     }
 
     .plain-alert {
-        background: transparent;
-        color: #8b1e1e;
-        padding: 0.1rem 0;
+        background: #c93b3b;
+        color: #ffffff;
+        padding: 0.46rem 0.9rem;
         margin: 0.2rem 0 0.6rem 0;
-        font-weight: 600;
+        font-weight: 400;
+        border-radius: 12px;
+        border: 1px solid rgba(139, 30, 30, 0.18);
     }
     </style>
     """,
