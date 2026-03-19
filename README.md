@@ -1,6 +1,6 @@
 # Fake News Classification
 
-This project implements a fake news classification workflow using classical machine learning for binary text classification. It includes a full training notebook, exported model artifacts, and a synchronized Streamlit app with `Predict`, `Dashboard`, and `News Classification Pipeline` tabs.
+This project implements a fake news classification workflow using classical machine learning for binary text classification. It includes a full training notebook, exported model artifacts, and a synchronized Streamlit app with `Article Analysis`, `Model Performance`, and `News Classification Pipeline` tabs.
 
 ## Highlights
 
@@ -9,7 +9,7 @@ This project implements a fake news classification workflow using classical mach
 - Baseline comparison across Logistic Regression, Naive Bayes, Linear SVM, and Random Forest
 - Hyperparameter tuning with `GridSearchCV` and `RandomizedSearchCV`
 - Synchronized Streamlit app aligned with the notebook preprocessing and model artifacts
-- Dashboard tab with benchmark tables, metric heatmap, validation checks, and final evaluation visuals
+- Model Performance tab with benchmark tables, metric heatmap, validation checks, and final evaluation visuals
 - Pipeline tab showing the final methodology diagram used in the app
 
 ## Main Files
@@ -33,9 +33,9 @@ The fake and real news dataset used in this project comes from Kaggle:
 
 The Streamlit app is organized into three main sections:
 
-- `Predict`
+- `Article Analysis`
   Classify new article text as Fake News or Real News using the exported final pipeline.
-- `Dashboard`
+- `Model Performance`
   Present benchmark outputs from the notebook in a cleaner interactive format.
 - `News Classification Pipeline`
   Show the final pipeline diagram used for presentation and documentation.
@@ -185,7 +185,7 @@ streamlit run AppNewsClassification.py
 - fake/real news prediction from text input
 - source-based sample loading for real and fake examples
 - synchronized preprocessing trace display
-- Dashboard tab with benchmark summaries and plots
+- Model Performance tab with benchmark summaries and plots
 - pipeline diagram tab using `assets/PipeLine.png`
 - artifact-driven loading from `Models/`
 
