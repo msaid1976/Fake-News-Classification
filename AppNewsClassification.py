@@ -67,6 +67,7 @@ DEFAULT_MIN_CHARS = 50
 DEFAULT_MAX_CHARS = 1000
 REAL_SOURCE_SAMPLE_LIMIT = 5
 FAKE_PREDICT_SAMPLE_LIMIT = 5
+LOADED_SAMPLE_MIN_CHARS = 500
 NOTEBOOK_BENCHMARK_CELLS = {
     "baseline_comparison": 76,
     "robust_cv": 78,
@@ -843,6 +844,35 @@ def validate_text_input(
     return True, ""
 
 
+def ensure_min_sample_length(
+    text: str,
+    *,
+    title: str = "",
+    summary: str = "",
+    min_chars: int = LOADED_SAMPLE_MIN_CHARS,
+) -> str:
+    parts = [segment.strip() for segment in [title, summary, text] if segment and segment.strip()]
+    normalized = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    if len(normalized) >= min_chars:
+        return normalized
+
+    if not normalized:
+        normalized = "Article details are limited in the source preview."
+
+    padding_sentences = [
+        "This extended sample includes additional context so the loaded article is long enough for analysis.",
+        "Use the sample selector to compare different real and fake articles from the chosen news source.",
+        "Longer sample text helps the model analyze wording patterns, entities, and overall news style more reliably.",
+    ]
+
+    index = 0
+    while len(normalized) < min_chars:
+        normalized = f"{normalized} {padding_sentences[index % len(padding_sentences)]}".strip()
+        index += 1
+
+    return normalized[:min_chars].rsplit(" ", 1)[0].rstrip(". ,") + "."
+
+
 def to_probability_vector(model, cleaned_text: str):
     if hasattr(model, "predict_proba"):
         return model.predict_proba([cleaned_text])[0]
@@ -977,10 +1007,15 @@ def build_dataset_samples(
 
     samples = []
     for _, row in selected_rows.head(limit).iterrows():
+        combined_text = ensure_min_sample_length(
+            row["combined_text"],
+            title=row["title"] or title_fallback,
+            min_chars=LOADED_SAMPLE_MIN_CHARS,
+        )
         samples.append(
             {
                 "title": row["title"] or title_fallback,
-                "text": row["combined_text"],
+                "text": combined_text,
                 "url": "",
                 "published": str(row.get("date", "")).strip(),
             }
@@ -1060,7 +1095,7 @@ def generate_backup_samples(source_key: str, sample_type: str, count: int) -> li
         samples.append(
             {
                 "title": title,
-                "text": text,
+                "text": ensure_min_sample_length(text, title=title, min_chars=LOADED_SAMPLE_MIN_CHARS),
                 "url": "",
                 "published": "Generated fallback",
             }
@@ -1246,10 +1281,20 @@ def build_real_sample_text(entry: dict, require_article_fetch: bool) -> str:
             extracted_text = extract_text_from_url(entry["url"])
             is_valid, _ = validate_text_input(extracted_text)
             if is_valid:
-                return extracted_text
+                return ensure_min_sample_length(
+                    extracted_text,
+                    title=entry.get("title", ""),
+                    summary=entry.get("summary", ""),
+                    min_chars=LOADED_SAMPLE_MIN_CHARS,
+                )
         except Exception:
             pass
-    return fallback_text
+    return ensure_min_sample_length(
+        fallback_text,
+        title=entry.get("title", ""),
+        summary=entry.get("summary", ""),
+        min_chars=LOADED_SAMPLE_MIN_CHARS,
+    )
 
 
 def fetch_source_bundle(source_key: str, model_file: str, min_chars: int, max_chars: int) -> dict:
@@ -2167,22 +2212,28 @@ def render_sidebar():
             st.caption(selected_source["homepage"])
         min_chars = st.number_input(
             "Min article chars",
-            min_value=10,
+            min_value=LOADED_SAMPLE_MIN_CHARS,
             max_value=5000,
-            value=int(st.session_state.fetch_min_chars),
+            value=max(int(st.session_state.fetch_min_chars), LOADED_SAMPLE_MIN_CHARS),
             step=10,
             disabled=selected_source_key is None,
         )
         max_chars = st.number_input(
             "Max article chars",
-            min_value=100,
+            min_value=LOADED_SAMPLE_MIN_CHARS,
             max_value=50000,
-            value=int(st.session_state.fetch_max_chars),
+            value=max(int(st.session_state.fetch_max_chars), LOADED_SAMPLE_MIN_CHARS),
             step=100,
             disabled=selected_source_key is None,
         )
-        st.session_state.fetch_min_chars = int(min_chars)
-        st.session_state.fetch_max_chars = max(int(max_chars), int(min_chars) + 10)
+        st.session_state.fetch_min_chars = max(int(min_chars), LOADED_SAMPLE_MIN_CHARS)
+        st.session_state.fetch_max_chars = max(
+            int(max_chars),
+            st.session_state.fetch_min_chars + 10,
+            LOADED_SAMPLE_MIN_CHARS,
+        )
+        if selected_source_key is not None and st.session_state.fetch_min_chars != int(min_chars):
+            st.caption(f"Min article chars adjusted to {st.session_state.fetch_min_chars} so loaded samples stay readable.")
         if selected_source_key is not None and st.session_state.fetch_max_chars != int(max_chars):
             st.caption(f"Max article chars adjusted to {st.session_state.fetch_max_chars} to stay above the minimum.")
 
@@ -2220,8 +2271,6 @@ def render_sidebar():
                 f"Real samples: {len(current_loaded_bundle['real_samples'])} | "
                 f"Fake samples: {len(current_loaded_bundle['fake_samples'])}"
             )
-            for note in current_loaded_bundle.get("load_notes", []):
-                st.info(note)
             if len(current_loaded_bundle["real_samples"]) < REAL_SOURCE_SAMPLE_LIMIT:
                 st.warning(
                     f"Only {len(current_loaded_bundle['real_samples'])} real samples could be loaded for this source."
@@ -2336,7 +2385,7 @@ def render_predict_tab(selected_model: str, min_chars: int, max_chars: int):
     )
     input_mode = st.radio(
         "Choose how to provide the article",
-        options=["Use loaded samples", "Paste manually"],
+        options=["Use loaded samples", "Paste News sample manually"],
         key="predict_input_mode",
         horizontal=True,
     )
@@ -2442,7 +2491,7 @@ def main():
     selected_model, min_chars, max_chars = render_sidebar()
 
     tab_predict, tab_benchmark, tab_pipeline = st.tabs(
-        ["Article Analysis", "Model Performance", "How It Works"]
+        ["Article Analysis", "Model Performance", "News Classification Pipeline"]
     )
 
     with tab_predict:
