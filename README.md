@@ -29,6 +29,35 @@ The fake and real news dataset used in this project comes from Kaggle:
 
 - https://www.kaggle.com/datasets/bhavikjikadara/fake-news-detection
 
+##  1.Install dependencies
+```bash
+python -m venv .venv
+.\.venv\Scripts\Activate
+pip install -r requirements.txt
+```
+
+## 2. Run the notebook
+Open and run:
+
+```text
+News_Classification.ipynb
+```
+The notebook will:
+- Automatically download the [fake-news-detection](https://www.kaggle.com/datasets/bhavikjikadara/fake-news-detection) dataset, and automatically place it into the 📁 `Dataset` folder.
+- Inspect and clean the dataset.
+- Preprocess the text.
+- Train and compare models.
+- Tune shortlisted models.
+- Evaluate the best model.
+- Export trained `.pkl` artifacts into the 📁 `Models/`folder.
+
+### 3. Run the Streamlit app
+
+```powershell
+streamlit run AppNewsClassification.py
+```
+
+
 ## Application Overview
 
 The Streamlit app is organized into three main sections:
@@ -143,40 +172,7 @@ Fake-News-Classification/
 - `assets/`
   Stores the pipeline image and README/dashboard screenshots.
 
-## How To Reproduce
 
-### 1. Install dependencies
-
-```powershell
-pip install -r requirements.txt
-```
-
-### 2. Prepare the dataset
-
-Place the fake and real CSV files inside `Dataset/`.
-
-### 3. Run the notebook
-
-Open and run:
-
-```text
-News_Classification.ipynb
-```
-
-The notebook will:
-
-- inspect and clean the dataset
-- preprocess the text
-- train and compare models
-- tune shortlisted models
-- evaluate the best model
-- export trained `.pkl` artifacts into `Models/`
-
-### 4. Run the Streamlit app
-
-```powershell
-streamlit run AppNewsClassification.py
-```
 
 ## App Features
 
